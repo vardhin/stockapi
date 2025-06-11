@@ -161,24 +161,6 @@ async function getHistoricalData(symbol, period = '1d', interval = '1m', useCach
     }
 }
 
-// Base stock data function with caching
-async function getStockData(symbol, modules = 'summaryDetail,price,defaultKeyStatistics', useCache = true) {
-    try {
-        const summaryUrl = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${symbol}.NS?modules=${modules}`;
-        const response = await axiosInstance.get(summaryUrl);
-        return response.data.quoteSummary.result[0];
-    } catch (error) {
-        // Fallback to different API endpoint
-        try {
-            const fallbackUrl = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${symbol}.NS?modules=${modules}`;
-            const response = await axiosInstance.get(fallbackUrl);
-            return response.data.quoteSummary.result[0];
-        } catch (fallbackError) {
-            throw new Error(`Failed to fetch data for ${symbol}: ${error.response?.status || error.message}`);
-        }
-    }
-}
-
 // Alternative data source function (NSE API)
 async function getNSEData(symbol) {
     try {
@@ -233,30 +215,6 @@ app.get('/api/stock/:symbol/quote', async (req, res) => {
         } catch (simpleError) {
             console.log('Simple method failed:', simpleError.message);
         }
-        
-        // Fallback to original method
-        try {
-            const data = await getStockData(symbol, 'summaryDetail,price,defaultKeyStatistics', useCache);
-            const price = data.price;
-            
-            res.json({
-                symbol: price.symbol,
-                currentPrice: price.regularMarketPrice?.raw || 0,
-                previousClose: price.regularMarketPreviousClose?.raw || 0,
-                change: price.regularMarketChange?.raw || 0,
-                changePercent: price.regularMarketChangePercent?.raw || 0,
-                currency: price.currency,
-                marketState: price.marketState,
-                source: 'Yahoo Finance',
-                cached: false
-            });
-        } catch (yahooError) {
-            res.status(500).json({ 
-                error: 'All data sources failed',
-                details: yahooError.message,
-                suggestion: 'Try /api/simple/:symbol endpoint instead'
-            });
-        }
     } catch (error) {
         res.status(500).json({ 
             error: error.message,
@@ -276,14 +234,6 @@ app.get('/api/test/:symbol', async (req, res) => {
         results.simple = { status: 'success', data: simpleData };
     } catch (error) {
         results.simple = { status: 'failed', error: error.message };
-    }
-    
-    // Test original Yahoo method
-    try {
-        const yahooData = await getStockData(symbol);
-        results.yahoo = { status: 'success', data: yahooData.price };
-    } catch (error) {
-        results.yahoo = { status: 'failed', error: error.message };
     }
     
     res.json(results);
@@ -506,7 +456,7 @@ app.get('/api/stock/:symbol/details', async (req, res) => {
         const { nocache } = req.query;
         const useCache = nocache !== 'true';
         
-        const data = await getStockData(symbol, 'summaryDetail,price,defaultKeyStatistics', useCache);
+        const data = await getSimpleStockData(symbol, 'summaryDetail,price,defaultKeyStatistics', useCache);
         const price = data.price;
         const summaryDetail = data.summaryDetail;
         const keyStats = data.defaultKeyStatistics;
