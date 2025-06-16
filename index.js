@@ -1,603 +1,668 @@
-const axios = require('axios');
 const express = require('express');
-const StockDatabase = require('./database/db');
-const app = express();
+const cors = require('cors');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
+const {
+    // Core stock data functions
+    getSimpleStockData,
+    getHistoricalData,
+    getEnhancedQuote,
+    getStockDetails,
+    getNSEData,
+    
+    // Time-based data functions
+    getIntradayData,
+    getWeeklyData,
+    getMonthlyData,
+    getQuarterlyData,
+    getYearlyData,
+    
+    // Comparison and analysis
+    compareStocks,
+    
+    // Search functions
+    searchStocks,
+    searchOnlineStocks,
+    searchAndQuote,
+    
+    // Popular stocks
+    getPopularStocks,
+    
+    // Cache management
+    cleanExpiredCache,
+    autoCleanup,
+    
+    // Database management
+    closeDatabase
+} = require('./stockUtils');
 
-// Initialize database
-const db = new StockDatabase();
+// Import authentication functions
+const {
+    signup,
+    signin,
+    refreshToken,
+    logout,
+    getCurrentUser,
+    authenticate,
+    securityHeaders,
+    extractBearerToken
+} = require('./auth');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
 
 // Middleware
+app.use(helmet());
+app.use(securityHeaders()); // Add security headers from auth
+app.use(cors({
+    origin: ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:8080'],
+    credentials: true
+}));
 app.use(express.json());
 
-// Enhanced axios instance with better headers
-const axiosInstance = axios.create({
-    headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'cross-site',
-        'Origin': 'https://finance.yahoo.com',
-        'Referer': 'https://finance.yahoo.com/',
-    },
-    timeout: 15000
-});
-
-// Improved simple data function with caching
-async function getSimpleStockData(symbol, useCache = true) {
-    // Check cache first
-    if (useCache) {
-        const cached = await db.getCachedQuote(symbol, 5); // 5 minutes cache
-        if (cached) {
-            console.log(`📊 Cache hit for ${symbol}`);
-            return {
-                symbol: cached.symbol,
-                currentPrice: cached.current_price,
-                previousClose: cached.previous_close,
-                dayHigh: cached.day_high,
-                dayLow: cached.day_low,
-                volume: cached.volume,
-                currency: 'INR',
-                exchangeName: 'NSI',
-                source: 'Database Cache',
-                cached: true,
-                lastUpdated: cached.last_updated
-            };
-        }
-    }
-
-    const endpoints = [
-        `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}.NS`,
-        `https://query2.finance.yahoo.com/v8/finance/chart/${symbol}.NS`,
-        `https://finance.yahoo.com/quote/${symbol}.NS`,
-    ];
-    
-    for (const url of endpoints) {
-        try {
-            const response = await axiosInstance.get(url);
-            if (response.data?.chart?.result?.[0]) {
-                const data = response.data.chart.result[0];
-                const meta = data.meta;
-                
-                const stockData = {
-                    symbol: meta.symbol,
-                    currentPrice: meta.regularMarketPrice,
-                    previousClose: meta.previousClose,
-                    dayHigh: meta.regularMarketDayHigh,
-                    dayLow: meta.regularMarketDayLow,
-                    volume: meta.regularMarketVolume,
-                    currency: meta.currency,
-                    exchangeName: meta.exchangeName,
-                    source: 'Yahoo Finance Chart API',
-                    cached: false
-                };
-                
-                // Cache the data
-                if (useCache) {
-                    try {
-                        await db.cacheQuote(symbol, stockData);
-                        console.log(`💾 Cached data for ${symbol}`);
-                    } catch (cacheError) {
-                        console.error('Cache error:', cacheError);
-                    }
-                }
-                
-                return stockData;
-            }
-        } catch (error) {
-            console.log(`Failed endpoint ${url}: ${error.message}`);
-            continue;
-        }
-    }
-    throw new Error(`All endpoints failed for ${symbol}`);
-}
-
-// Historical data function with caching
-async function getHistoricalData(symbol, period = '1d', interval = '1m', useCache = true) {
-    // Check cache first
-    if (useCache) {
-        const cached = await db.getCachedHistoricalData(symbol, period, 1); // 1 hour cache
-        if (cached && cached.length > 0) {
-            console.log(`📊 Cache hit for ${symbol} historical data (${period})`);
-            return {
-                meta: { symbol: symbol },
-                timestamp: cached.map(row => row.timestamp / 1000),
-                indicators: {
-                    quote: [{
-                        open: cached.map(row => row.open_price),
-                        high: cached.map(row => row.high_price),
-                        low: cached.map(row => row.low_price),
-                        close: cached.map(row => row.close_price),
-                        volume: cached.map(row => row.volume)
-                    }]
-                },
-                cached: true
-            };
-        }
-    }
-
-    try {
-        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}.NS?range=${period}&interval=${interval}`;
-        const response = await axiosInstance.get(url);
-        const data = response.data.chart.result[0];
-        
-        // Cache the historical data
-        if (useCache && data.timestamp) {
-            try {
-                const timestamps = data.timestamp;
-                const quotes = data.indicators.quote[0];
-                
-                const historicalData = timestamps.map((timestamp, index) => ({
-                    time: new Date(timestamp * 1000).toISOString(),
-                    date: new Date(timestamp * 1000).toISOString().split('T')[0],
-                    open: quotes.open[index],
-                    high: quotes.high[index],
-                    low: quotes.low[index],
-                    close: quotes.close[index],
-                    volume: quotes.volume[index]
-                }));
-                
-                await db.cacheHistoricalData(symbol, period, interval, historicalData);
-                console.log(`💾 Cached historical data for ${symbol} (${period})`);
-            } catch (cacheError) {
-                console.error('Historical cache error:', cacheError);
-            }
-        }
-        
-        return { ...data, cached: false };
-    } catch (error) {
-        // Fallback to different endpoint
-        try {
-            const fallbackUrl = `https://query2.finance.yahoo.com/v8/finance/chart/${symbol}.NS?range=${period}&interval=${interval}`;
-            const response = await axiosInstance.get(fallbackUrl);
-            return { ...response.data.chart.result[0], cached: false };
-        } catch (fallbackError) {
-            throw new Error(`Failed to fetch historical data for ${symbol}: ${error.response?.status || error.message}`);
-        }
-    }
-}
-
-// Alternative data source function (NSE API)
-async function getNSEData(symbol) {
-    try {
-        const url = `https://www.nseindia.com/api/quote-equity?symbol=${symbol}`;
-        const response = await axiosInstance.get(url, {
-            headers: {
-                ...axiosInstance.defaults.headers,
-                'Referer': 'https://www.nseindia.com/',
-                'X-Requested-With': 'XMLHttpRequest'
-            }
-        });
-        return response.data;
-    } catch (error) {
-        throw new Error(`NSE API failed for ${symbol}: ${error.message}`);
-    }
-}
-
-// ENDPOINTS
-
-// 1. Simple and reliable quote endpoint with caching
-app.get('/api/simple/:symbol', async (req, res) => {
-    try {
-        const { symbol } = req.params;
-        const { nocache } = req.query; // Allow bypassing cache with ?nocache=true
-        const useCache = nocache !== 'true';
-        
-        const data = await getSimpleStockData(symbol, useCache);
-        res.json(data);
-    } catch (error) {
-        res.status(500).json({ 
-            error: error.message,
-            suggestion: 'Try a different stock symbol (e.g., RELIANCE, TCS, INFY)'
-        });
+// Rate limiting with different limits for auth endpoints
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // limit each IP to 100 requests per windowMs
+    message: {
+        error: 'Too many requests from this IP, please try again later.',
+        retryAfter: '15 minutes'
     }
 });
 
-// 2. Enhanced quote with multiple fallbacks and caching
-app.get('/api/stock/:symbol/quote', async (req, res) => {
-    try {
-        const { symbol } = req.params;
-        const { nocache } = req.query;
-        const useCache = nocache !== 'true';
-        
-        // Try simple method first
-        try {
-            const data = await getSimpleStockData(symbol, useCache);
-            return res.json({
-                ...data,
-                change: data.currentPrice - data.previousClose,
-                changePercent: ((data.currentPrice - data.previousClose) / data.previousClose) * 100
-            });
-        } catch (simpleError) {
-            console.log('Simple method failed:', simpleError.message);
-        }
-    } catch (error) {
-        res.status(500).json({ 
-            error: error.message,
-            suggestion: 'Check if the stock symbol is correct and market is open'
-        });
+// Stricter rate limiting for auth endpoints
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 10, // limit each IP to 10 auth requests per windowMs
+    message: {
+        error: 'Too many authentication attempts from this IP, please try again later.',
+        retryAfter: '15 minutes'
     }
 });
 
-// 3. Debug endpoint to test different methods
-app.get('/api/test/:symbol', async (req, res) => {
-    const { symbol } = req.params;
-    const results = {};
-    
-    // Test simple method
-    try {
-        const simpleData = await getSimpleStockData(symbol);
-        results.simple = { status: 'success', data: simpleData };
-    } catch (error) {
-        results.simple = { status: 'failed', error: error.message };
-    }
-    
-    res.json(results);
-});
+app.use('/api/', limiter);
+app.use('/api/auth/', authLimiter);
 
-// 4. Working comparison endpoint with caching
-app.post('/api/stocks/compare', async (req, res) => {
-    try {
-        const { symbols } = req.body;
-        const { nocache } = req.query;
-        const useCache = nocache !== 'true';
-        
-        if (!symbols || !Array.isArray(symbols)) {
-            return res.status(400).json({ error: 'Please provide an array of stock symbols' });
-        }
-        
-        const stockData = [];
-        for (const symbol of symbols) {
-            try {
-                const data = await getSimpleStockData(symbol, useCache);
-                stockData.push({
-                    symbol: data.symbol,
-                    currentPrice: data.currentPrice,
-                    previousClose: data.previousClose,
-                    change: data.currentPrice - data.previousClose,
-                    changePercent: ((data.currentPrice - data.previousClose) / data.previousClose) * 100,
-                    volume: data.volume,
-                    currency: data.currency,
-                    cached: data.cached
-                });
-            } catch (error) {
-                stockData.push({
-                    symbol: symbol,
-                    error: `Failed to fetch data: ${error.message}`
-                });
-            }
+// Helper function to handle async routes
+const asyncHandler = (fn) => (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+};
+
+// Root endpoint
+app.get('/', (req, res) => {
+    res.json({
+        message: 'Stock API Server with Authentication',
+        version: '1.1.0',
+        endpoints: {
+            // Authentication endpoints
+            'POST /api/auth/signup': 'User registration',
+            'POST /api/auth/signin': 'User login',
+            'POST /api/auth/refresh': 'Refresh access token',
+            'POST /api/auth/logout': 'User logout (requires auth)',
+            'GET /api/auth/me': 'Get current user info (requires auth)',
             
-            // Add delay to avoid rate limiting
-            await new Promise(resolve => setTimeout(resolve, 200));
-        }
-        
-        res.json({ stocks: stockData });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Historical data endpoints with caching
-
-// 6. 1-day intraday data (1-minute intervals)
-app.get('/api/stock/:symbol/1d', async (req, res) => {
-    try {
-        const { symbol } = req.params;
-        const { nocache } = req.query;
-        const useCache = nocache !== 'true';
-        
-        const data = await getHistoricalData(symbol, '1d', '1m', useCache);
-        const timestamps = data.timestamp;
-        const quotes = data.indicators.quote[0];
-        
-        const dayData = timestamps.map((timestamp, index) => ({
-            time: new Date(timestamp * 1000).toISOString(),
-            open: quotes.open[index],
-            high: quotes.high[index],
-            low: quotes.low[index],
-            close: quotes.close[index],
-            volume: quotes.volume[index]
-        }));
-        
-        res.json({
-            symbol: data.meta.symbol,
-            period: '1d',
-            interval: '1m',
-            cached: data.cached || false,
-            data: dayData
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// 7. 5-day data (5-minute intervals)
-app.get('/api/stock/:symbol/5d', async (req, res) => {
-    try {
-        const { symbol } = req.params;
-        const { nocache } = req.query;
-        const useCache = nocache !== 'true';
-        
-        const data = await getHistoricalData(symbol, '5d', '5m', useCache);
-        const timestamps = data.timestamp;
-        const quotes = data.indicators.quote[0];
-        
-        const weekData = timestamps.map((timestamp, index) => ({
-            time: new Date(timestamp * 1000).toISOString(),
-            open: quotes.open[index],
-            high: quotes.high[index],
-            low: quotes.low[index],
-            close: quotes.close[index],
-            volume: quotes.volume[index]
-        }));
-        
-        res.json({
-            symbol: data.meta.symbol,
-            period: '5d',
-            interval: '5m',
-            cached: data.cached || false,
-            data: weekData
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// 8. 1-month data (daily intervals)
-app.get('/api/stock/:symbol/1mo', async (req, res) => {
-    try {
-        const { symbol } = req.params;
-        const { nocache } = req.query;
-        const useCache = nocache !== 'true';
-        
-        const data = await getHistoricalData(symbol, '1mo', '1d', useCache);
-        const timestamps = data.timestamp;
-        const quotes = data.indicators.quote[0];
-        
-        const monthData = timestamps.map((timestamp, index) => ({
-            date: new Date(timestamp * 1000).toISOString().split('T')[0],
-            open: quotes.open[index],
-            high: quotes.high[index],
-            low: quotes.low[index],
-            close: quotes.close[index],
-            volume: quotes.volume[index]
-        }));
-        
-        res.json({
-            symbol: data.meta.symbol,
-            period: '1mo',
-            interval: '1d',
-            cached: data.cached || false,
-            data: monthData
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// 9. 3-month data (daily intervals)
-app.get('/api/stock/:symbol/3mo', async (req, res) => {
-    try {
-        const { symbol } = req.params;
-        const { nocache } = req.query;
-        const useCache = nocache !== 'true';
-        
-        const data = await getHistoricalData(symbol, '3mo', '1d', useCache);
-        const timestamps = data.timestamp;
-        const quotes = data.indicators.quote[0];
-        
-        const quarterData = timestamps.map((timestamp, index) => ({
-            date: new Date(timestamp * 1000).toISOString().split('T')[0],
-            open: quotes.open[index],
-            high: quotes.high[index],
-            low: quotes.low[index],
-            close: quotes.close[index],
-            volume: quotes.volume[index]
-        }));
-        
-        res.json({
-            symbol: data.meta.symbol,
-            period: '3mo',
-            interval: '1d',
-            cached: data.cached || false,
-            data: quarterData
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// 10. 1-year data (weekly intervals)
-app.get('/api/stock/:symbol/1y', async (req, res) => {
-    try {
-        const { symbol } = req.params;
-        const { nocache } = req.query;
-        const useCache = nocache !== 'true';
-        
-        const data = await getHistoricalData(symbol, '1y', '1wk', useCache);
-        const timestamps = data.timestamp;
-        const quotes = data.indicators.quote[0];
-        
-        const yearData = timestamps.map((timestamp, index) => ({
-            date: new Date(timestamp * 1000).toISOString().split('T')[0],
-            open: quotes.open[index],
-            high: quotes.high[index],
-            low: quotes.low[index],
-            close: quotes.close[index],
-            volume: quotes.volume[index]
-        }));
-        
-        // Calculate 52-week high/low
-        const highs = quotes.high.filter(h => h !== null);
-        const lows = quotes.low.filter(l => l !== null);
-        
-        res.json({
-            symbol: data.meta.symbol,
-            period: '1y',
-            interval: '1wk',
-            cached: data.cached || false,
-            fiftyTwoWeekHigh: Math.max(...highs),
-            fiftyTwoWeekLow: Math.min(...lows),
-            data: yearData
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// 11. Comprehensive stock details
-app.get('/api/stock/:symbol/details', async (req, res) => {
-    try {
-        const { symbol } = req.params;
-        const { nocache } = req.query;
-        const useCache = nocache !== 'true';
-        
-        const data = await getSimpleStockData(symbol, 'summaryDetail,price,defaultKeyStatistics', useCache);
-        const price = data.price;
-        const summaryDetail = data.summaryDetail;
-        const keyStats = data.defaultKeyStatistics;
-        
-        res.json({
-            symbol: price.symbol,
-            currentPrice: price.regularMarketPrice?.raw || 0,
-            previousClose: price.regularMarketPreviousClose?.raw || 0,
-            dayHigh: price.regularMarketDayHigh?.raw || 0,
-            dayLow: price.regularMarketDayLow?.raw || 0,
-            volume: price.regularMarketVolume?.raw || 0,
-            fiftyTwoWeekHigh: summaryDetail.fiftyTwoWeekHigh?.raw || 0,
-            fiftyTwoWeekLow: summaryDetail.fiftyTwoWeekLow?.raw || 0,
-            marketCap: price.marketCap?.raw || 0,
-            currency: price.currency,
-            beta: keyStats.beta?.raw || 0,
-            peRatio: summaryDetail.trailingPE?.raw || 0,
-            eps: keyStats.trailingEps?.raw || 0,
-            dividendYield: summaryDetail.dividendYield?.raw || 0,
-            changePercent: price.regularMarketChangePercent?.raw || 0,
-            change: price.regularMarketChange?.raw || 0,
-            cached: false
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Database utility endpoints
-
-// Search stocks
-app.get('/api/search/:query', async (req, res) => {
-    try {
-        const { query } = req.params;
-        const { limit = 10 } = req.query;
-        
-        const results = await db.searchStocks(query, parseInt(limit));
-        res.json({ query, results });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Get popular stocks - Fixed route with separate endpoints
-app.get('/api/popular', async (req, res) => {
-    try {
-        const { category = 'nifty50', limit = 10 } = req.query;
-        
-        const results = await db.getPopularStocks(category, parseInt(limit));
-        res.json({ category, results });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Get popular stocks by category
-app.get('/api/popular/:category', async (req, res) => {
-    try {
-        const { category } = req.params;
-        const { limit = 10 } = req.query;
-        
-        const results = await db.getPopularStocks(category, parseInt(limit));
-        res.json({ category, results });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Clean expired cache
-app.post('/api/cache/clean', async (req, res) => {
-    try {
-        const cleaned = await db.cleanExpiredCache();
-        res.json({ 
-            message: 'Cache cleaned successfully',
-            entriesRemoved: cleaned 
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Enhanced health check
-app.get('/api/health', (req, res) => {
-    res.json({ 
-        status: 'OK', 
-        timestamp: new Date().toISOString(),
-        features: {
-            caching: 'Enabled',
-            database: 'SQLite',
-            cacheTypes: ['quotes', 'historical_data', 'search_results']
+            // Stock API endpoints
+            'GET /': 'API Information',
+            'GET /api/stock/:symbol': 'Get basic stock data',
+            'GET /api/stock/:symbol/quote': 'Get enhanced stock quote',
+            'GET /api/stock/:symbol/details': 'Get detailed stock information',
+            'GET /api/stock/:symbol/intraday': 'Get intraday data (1 day)',
+            'GET /api/stock/:symbol/weekly': 'Get weekly data (5 days)',
+            'GET /api/stock/:symbol/monthly': 'Get monthly data (1 month)',
+            'GET /api/stock/:symbol/quarterly': 'Get quarterly data (3 months)',
+            'GET /api/stock/:symbol/yearly': 'Get yearly data (1 year)',
+            'GET /api/stock/:symbol/historical': 'Get historical data with custom period',
+            'GET /api/stock/:symbol/nse': 'Get NSE data',
+            'POST /api/stocks/compare': 'Compare multiple stocks',
+            'GET /api/search': 'Search stocks',
+            'GET /api/search/online': 'Search stocks online only',
+            'GET /api/search-quote': 'Search and get quote in one call',
+            'GET /api/popular': 'Get popular stocks',
+            'DELETE /api/cache/clean': 'Clean expired cache (requires auth)',
+            'GET /api/health': 'Health check'
         },
-        endpoints: [
-            'GET /api/simple/:symbol (RECOMMENDED)',
-            'GET /api/stock/:symbol/quote',
-            'GET /api/test/:symbol',
-            'GET /api/stock/:symbol/1d',
-            'GET /api/stock/:symbol/5d',
-            'GET /api/stock/:symbol/1mo',
-            'GET /api/stock/:symbol/3mo',
-            'GET /api/stock/:symbol/1y',
-            'GET /api/stock/:symbol/details',
-            'POST /api/stocks/compare',
-            'GET /api/search/:query',
-            'GET /api/popular',
-            'GET /api/popular/:category',
-            'POST /api/cache/clean'
-        ],
-        notes: [
-            'Use /api/simple/:symbol for most reliable results',
-            'Add ?nocache=true to bypass cache',
-            'Cache TTL: 5 minutes for quotes, 1 hour for historical data'
-        ]
+        authentication: {
+            note: 'Some endpoints require authentication. Include "Authorization: Bearer <token>" header.',
+            tokenExpiry: '30 minutes for access token, 7 days for refresh token'
+        }
     });
 });
 
-// Graceful shutdown
-process.on('SIGINT', () => {
-    console.log('\n📊 Shutting down gracefully...');
-    db.close();
-    process.exit(0);
+// ================================
+// AUTHENTICATION ENDPOINTS
+// ================================
+
+// User registration
+app.post('/api/auth/signup', asyncHandler(async (req, res) => {
+    const { email, password, confirmPassword, fullName } = req.body;
+
+    // Validate required fields
+    if (!email || !password || !confirmPassword || !fullName) {
+        return res.status(400).json({
+            success: false,
+            error: 'All fields are required: email, password, confirmPassword, fullName'
+        });
+    }
+
+    const tokens = await signup({ email, password, confirmPassword, fullName }, req);
+    
+    res.status(201).json({
+        success: true,
+        message: 'User registered successfully',
+        data: tokens,
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// User login
+app.post('/api/auth/signin', asyncHandler(async (req, res) => {
+    const { email, password } = req.body;
+
+    // Validate required fields
+    if (!email || !password) {
+        return res.status(400).json({
+            success: false,
+            error: 'Email and password are required'
+        });
+    }
+
+    const tokens = await signin({ email, password }, req);
+    
+    res.json({
+        success: true,
+        message: 'User logged in successfully',
+        data: tokens,
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// Refresh access token
+app.post('/api/auth/refresh', asyncHandler(async (req, res) => {
+    const { refresh_token } = req.body;
+
+    if (!refresh_token) {
+        return res.status(400).json({
+            success: false,
+            error: 'Refresh token is required'
+        });
+    }
+
+    const tokens = await refreshToken(refresh_token);
+    
+    res.json({
+        success: true,
+        message: 'Token refreshed successfully',
+        data: tokens,
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// User logout (requires authentication)
+app.post('/api/auth/logout', authenticate(), asyncHandler(async (req, res) => {
+    await logout(req.token);
+    
+    res.json({
+        success: true,
+        message: 'User logged out successfully',
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// Get current user info (requires authentication)
+app.get('/api/auth/me', authenticate(), asyncHandler(async (req, res) => {
+    res.json({
+        success: true,
+        data: req.user,
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// ================================
+// CORE STOCK DATA ENDPOINTS
+// ================================
+
+// Get basic stock data
+app.get('/api/stock/:symbol', asyncHandler(async (req, res) => {
+    const { symbol } = req.params;
+    const { cache = 'true' } = req.query;
+    const useCache = cache !== 'false';
+
+    const data = await getSimpleStockData(symbol.toUpperCase(), useCache);
+    res.json({
+        success: true,
+        data,
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// Get enhanced stock quote with change calculations
+app.get('/api/stock/:symbol/quote', asyncHandler(async (req, res) => {
+    const { symbol } = req.params;
+    const { cache = 'true' } = req.query;
+    const useCache = cache !== 'false';
+
+    const data = await getEnhancedQuote(symbol.toUpperCase(), useCache);
+    res.json({
+        success: true,
+        data,
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// Get detailed stock information
+app.get('/api/stock/:symbol/details', asyncHandler(async (req, res) => {
+    const { symbol } = req.params;
+    const { cache = 'true' } = req.query;
+    const useCache = cache !== 'false';
+
+    const data = await getStockDetails(symbol.toUpperCase(), useCache);
+    res.json({
+        success: true,
+        data,
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// Get NSE data
+app.get('/api/stock/:symbol/nse', asyncHandler(async (req, res) => {
+    const { symbol } = req.params;
+
+    const data = await getNSEData(symbol.toUpperCase());
+    res.json({
+        success: true,
+        data,
+        source: 'NSE API',
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// ================================
+// HISTORICAL DATA ENDPOINTS
+// ================================
+
+// Get intraday data (1 day, 1-minute intervals)
+app.get('/api/stock/:symbol/intraday', asyncHandler(async (req, res) => {
+    const { symbol } = req.params;
+    const { cache = 'true' } = req.query;
+    const useCache = cache !== 'false';
+
+    const data = await getIntradayData(symbol.toUpperCase(), useCache);
+    res.json({
+        success: true,
+        data,
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// Get weekly data (5 days, 5-minute intervals)
+app.get('/api/stock/:symbol/weekly', asyncHandler(async (req, res) => {
+    const { symbol } = req.params;
+    const { cache = 'true' } = req.query;
+    const useCache = cache !== 'false';
+
+    const data = await getWeeklyData(symbol.toUpperCase(), useCache);
+    res.json({
+        success: true,
+        data,
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// Get monthly data (1 month, daily intervals)
+app.get('/api/stock/:symbol/monthly', asyncHandler(async (req, res) => {
+    const { symbol } = req.params;
+    const { cache = 'true' } = req.query;
+    const useCache = cache !== 'false';
+
+    const data = await getMonthlyData(symbol.toUpperCase(), useCache);
+    res.json({
+        success: true,
+        data,
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// Get quarterly data (3 months, daily intervals)
+app.get('/api/stock/:symbol/quarterly', asyncHandler(async (req, res) => {
+    const { symbol } = req.params;
+    const { cache = 'true' } = req.query;
+    const useCache = cache !== 'false';
+
+    const data = await getQuarterlyData(symbol.toUpperCase(), useCache);
+    res.json({
+        success: true,
+        data,
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// Get yearly data (1 year, weekly intervals)
+app.get('/api/stock/:symbol/yearly', asyncHandler(async (req, res) => {
+    const { symbol } = req.params;
+    const { cache = 'true' } = req.query;
+    const useCache = cache !== 'false';
+
+    const data = await getYearlyData(symbol.toUpperCase(), useCache);
+    res.json({
+        success: true,
+        data,
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// Get custom historical data
+app.get('/api/stock/:symbol/historical', asyncHandler(async (req, res) => {
+    const { symbol } = req.params;
+    const { period = '1mo', interval = '1d', cache = 'true' } = req.query;
+    const useCache = cache !== 'false';
+
+    const data = await getHistoricalData(symbol.toUpperCase(), period, interval, useCache);
+    res.json({
+        success: true,
+        data,
+        parameters: { period, interval },
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// ================================
+// COMPARISON AND ANALYSIS ENDPOINTS
+// ================================
+
+// Compare multiple stocks
+app.post('/api/stocks/compare', asyncHandler(async (req, res) => {
+    const { symbols, cache = true } = req.body;
+
+    if (!symbols || !Array.isArray(symbols) || symbols.length === 0) {
+        return res.status(400).json({
+            success: false,
+            error: 'Please provide an array of symbols to compare'
+        });
+    }
+
+    if (symbols.length > 10) {
+        return res.status(400).json({
+            success: false,
+            error: 'Maximum 10 symbols allowed for comparison'
+        });
+    }
+
+    const upperSymbols = symbols.map(s => s.toUpperCase());
+    const data = await compareStocks(upperSymbols, cache);
+    
+    res.json({
+        success: true,
+        data,
+        symbolsCompared: upperSymbols.length,
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// ================================
+// SEARCH ENDPOINTS
+// ================================
+
+// Search stocks
+app.get('/api/search', asyncHandler(async (req, res) => {
+    const { q: query, limit = 10, online = 'true' } = req.query;
+
+    if (!query) {
+        return res.status(400).json({
+            success: false,
+            error: 'Query parameter "q" is required'
+        });
+    }
+
+    const useOnline = online !== 'false';
+    const data = await searchStocks(query, parseInt(limit), useOnline);
+    
+    res.json({
+        success: true,
+        data,
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// Search stocks online only
+app.get('/api/search/online', asyncHandler(async (req, res) => {
+    const { q: query, limit = 10 } = req.query;
+
+    if (!query) {
+        return res.status(400).json({
+            success: false,
+            error: 'Query parameter "q" is required'
+        });
+    }
+
+    const data = await searchOnlineStocks(query, parseInt(limit));
+    
+    res.json({
+        success: true,
+        data: {
+            query,
+            resultsCount: data.length,
+            source: 'Online',
+            results: data
+        },
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// Search and get quote in one call
+app.get('/api/search-quote', asyncHandler(async (req, res) => {
+    const { q: query, cache = 'true' } = req.query;
+
+    if (!query) {
+        return res.status(400).json({
+            success: false,
+            error: 'Query parameter "q" is required'
+        });
+    }
+
+    const useCache = cache !== 'false';
+    const data = await searchAndQuote(query, useCache);
+    
+    res.json({
+        success: true,
+        data,
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// ================================
+// POPULAR STOCKS ENDPOINTS
+// ================================
+
+// Get popular stocks
+app.get('/api/popular', asyncHandler(async (req, res) => {
+    const { category = 'nifty50', limit = 10 } = req.query;
+
+    const data = await getPopularStocks(category, parseInt(limit));
+    
+    res.json({
+        success: true,
+        data: {
+            category,
+            count: data.length,
+            stocks: data
+        },
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// ================================
+// CACHE MANAGEMENT ENDPOINTS (Protected)
+// ================================
+
+// Clean expired cache (now requires authentication)
+app.delete('/api/cache/clean', authenticate(), asyncHandler(async (req, res) => {
+    const data = await cleanExpiredCache();
+    
+    res.json({
+        success: true,
+        data,
+        message: 'Cache cleanup completed',
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// ================================
+// HEALTH CHECK ENDPOINT
+// ================================
+
+app.get('/api/health', asyncHandler(async (req, res) => {
+    // Perform a simple health check
+    try {
+        // Test database connection and a simple query
+        const testData = await getPopularStocks('nifty50', 1);
+        
+        res.json({
+            success: true,
+            status: 'healthy',
+            database: 'connected',
+            cache: 'operational',
+            authentication: 'available',
+            timestamp: new Date().toISOString(),
+            uptime: process.uptime(),
+            memory: process.memoryUsage(),
+            testQuery: testData.length > 0 ? 'passed' : 'no data'
+        });
+    } catch (error) {
+        res.status(503).json({
+            success: false,
+            status: 'unhealthy',
+            error: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+}));
+
+// ================================
+// ERROR HANDLING MIDDLEWARE
+// ================================
+
+// Handle 404
+app.use((req, res) => {
+    res.status(404).json({
+        success: false,
+        error: 'Endpoint not found',
+        path: req.path,
+        method: req.method,
+        timestamp: new Date().toISOString()
+    });
 });
 
-// Auto-cleanup cache every hour
+// Global error handler
+app.use((error, req, res, next) => {
+    console.error('API Error:', error);
+    
+    // Handle authentication errors
+    if (error.message.includes('Could not validate credentials') || 
+        error.message.includes('No bearer token provided') ||
+        error.message.includes('Token has been revoked')) {
+        return res.status(401).json({
+            success: false,
+            error: 'Authentication failed',
+            message: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    // Handle validation errors
+    if (error.message.includes('Invalid email') || 
+        error.message.includes('Password must') ||
+        error.message.includes('Email already registered') ||
+        error.message.includes('Passwords do not match')) {
+        return res.status(400).json({
+            success: false,
+            error: 'Validation error',
+            message: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+
+    // Handle account lockout
+    if (error.message.includes('Account temporarily locked')) {
+        return res.status(429).json({
+            success: false,
+            error: 'Account locked',
+            message: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+    
+    // Handle specific stock API error types
+    if (error.message.includes('All endpoints failed')) {
+        return res.status(503).json({
+            success: false,
+            error: 'Stock data temporarily unavailable',
+            symbol: req.params.symbol,
+            timestamp: new Date().toISOString()
+        });
+    }
+    
+    if (error.message.includes('No stock found')) {
+        return res.status(404).json({
+            success: false,
+            error: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+    
+    // Default error response
+    res.status(500).json({
+        success: false,
+        error: 'Internal server error',
+        message: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong',
+        timestamp: new Date().toISOString()
+    });
+});
+
+// ================================
+// SERVER STARTUP AND CLEANUP
+// ================================
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+    console.log('🛑 SIGTERM received, shutting down gracefully...');
+    try {
+        await closeDatabase();
+        process.exit(0);
+    } catch (error) {
+        console.error('Error during shutdown:', error);
+        process.exit(1);
+    }
+});
+
+process.on('SIGINT', async () => {
+    console.log('🛑 SIGINT received, shutting down gracefully...');
+    try {
+        await closeDatabase();
+        process.exit(0);
+    } catch (error) {
+        console.error('Error during shutdown:', error);
+        process.exit(1);
+    }
+});
+
+// Auto cleanup every hour
 setInterval(async () => {
     try {
-        await db.cleanExpiredCache();
+        await autoCleanup();
     } catch (error) {
-        console.error('Auto cleanup error:', error);
+        console.error('Auto cleanup failed:', error);
     }
-}, 3600000); // 1 hour
+}, 60 * 60 * 1000); // 1 hour
 
-const PORT = process.env.PORT || 3000;
+// Start server
 app.listen(PORT, () => {
-    console.log(`🚀 Stock API server running on port ${PORT}`);
-    console.log(`💾 Database caching enabled`);
-    console.log(`\n📊 USAGE EXAMPLES:`);
-    console.log(`curl http://localhost:${PORT}/api/simple/RELIANCE`);
-    console.log(`curl http://localhost:${PORT}/api/simple/RELIANCE?nocache=true`);
-    console.log(`curl http://localhost:${PORT}/api/search/reliance`);
-    console.log(`curl http://localhost:${PORT}/api/popular`);
-    console.log(`curl http://localhost:${PORT}/api/popular/nifty50`);
-    console.log(`\n🔥 For comparison:`);
-    console.log(`curl -X POST http://localhost:${PORT}/api/stocks/compare -H "Content-Type: application/json" -d '{"symbols": ["RELIANCE", "TCS", "INFY"]}'`);
+    console.log(`🚀 Stock API Server with Authentication running on port ${PORT}`);
+    console.log(`📊 API Documentation available at http://localhost:${PORT}/`);
+    console.log(`🔍 Health check: http://localhost:${PORT}/api/health`);
+    console.log(`🔐 Authentication endpoints: http://localhost:${PORT}/api/auth/*`);
+    
+    // Run initial cleanup
+    autoCleanup().catch(console.error);
 });
+
+module.exports = app;

@@ -15,6 +15,7 @@
   let popularStocks = null;
   let popularByCategory = null;
   let cacheCleanResult = null;
+  let searchAndQuoteData = null;
   
   // Input values
   let selectedSymbol = 'RELIANCE';
@@ -22,9 +23,13 @@
   let compareSymbols = 'RELIANCE,TCS,INFY';
   let searchQuery = 'reliance';
   let popularCategory = 'nifty50';
+  let searchAndQuoteQuery = 'tesla';
   
   // Loading states
   let loading = {};
+  
+  // Cache bypass options
+  let bypassCache = false;
   
   // Utility function to handle API calls
   async function apiCall(endpoint, options = {}) {
@@ -33,7 +38,14 @@
     loading = { ...loading };
     
     try {
-      const response = await fetch(`${API_BASE}${endpoint}`, options);
+      // Add nocache parameter if bypassing cache
+      const url = bypassCache && !endpoint.includes('?') 
+        ? `${API_BASE}${endpoint}?nocache=true`
+        : bypassCache && endpoint.includes('?')
+        ? `${API_BASE}${endpoint}&nocache=true`
+        : `${API_BASE}${endpoint}`;
+        
+      const response = await fetch(url, options);
       const data = await response.json();
       return data;
     } catch (error) {
@@ -82,7 +94,8 @@
   }
   
   async function fetchSearchResults() {
-    searchResults = await apiCall(`/search/${searchQuery}`);
+    const onlineParam = '&online=true'; // Enable online search
+    searchResults = await apiCall(`/search/${searchQuery}?limit=20${onlineParam}`);
   }
   
   async function fetchPopularStocks() {
@@ -95,6 +108,11 @@
   
   async function cleanCache() {
     cacheCleanResult = await apiCall('/cache/clean', { method: 'POST' });
+  }
+  
+  // New function for search and quote
+  async function fetchSearchAndQuote() {
+    searchAndQuoteData = await apiCall(`/search-and-quote/${searchAndQuoteQuery}`);
   }
   
   // Format functions
@@ -113,6 +131,14 @@
     return volume.toString();
   }
   
+  function formatMarketCap(marketCap) {
+    if (typeof marketCap !== 'number') return 'N/A';
+    if (marketCap >= 1000000000000) return '₹' + (marketCap / 1000000000000).toFixed(2) + 'T';
+    if (marketCap >= 1000000000) return '₹' + (marketCap / 1000000000).toFixed(2) + 'B';
+    if (marketCap >= 1000000) return '₹' + (marketCap / 1000000).toFixed(2) + 'M';
+    return '₹' + marketCap.toString();
+  }
+  
   onMount(() => {
     fetchHealth();
   });
@@ -125,8 +151,20 @@
 <div class="container">
   <header>
     <h1>📊 Stock API Frontend Demo</h1>
-    <p>Comprehensive demonstration of all available endpoints</p>
+    <p>Comprehensive demonstration of all available endpoints with enhanced features</p>
   </header>
+
+  <!-- Global Settings -->
+  <section class="api-section settings-section">
+    <h2>⚙️ Global Settings</h2>
+    <div class="input-group">
+      <label class="checkbox-label">
+        <input type="checkbox" bind:checked={bypassCache} />
+        Bypass Cache (Force fresh data)
+      </label>
+    </div>
+    <p class="note">When enabled, all requests will fetch fresh data instead of using cached results.</p>
+  </section>
 
   <!-- Health Check -->
   <section class="api-section">
@@ -141,17 +179,27 @@
         <p><strong>Timestamp:</strong> {healthData.timestamp}</p>
         {#if healthData.features}
           <h4>Features:</h4>
-          <ul>
+          <div class="features-grid">
             {#each Object.entries(healthData.features) as [key, value]}
-              <li><strong>{key}:</strong> {value}</li>
+              <div class="feature-item">
+                <strong>{key}:</strong> {value}
+              </div>
             {/each}
-          </ul>
+          </div>
         {/if}
         {#if healthData.endpoints}
           <h4>Available Endpoints:</h4>
-          <ul>
+          <div class="endpoints-list">
             {#each healthData.endpoints as endpoint}
-              <li><code>{endpoint}</code></li>
+              <code class="endpoint">{endpoint}</code>
+            {/each}
+          </div>
+        {/if}
+        {#if healthData.notes}
+          <h4>Usage Notes:</h4>
+          <ul class="notes-list">
+            {#each healthData.notes as note}
+              <li>{note}</li>
             {/each}
           </ul>
         {/if}
@@ -174,6 +222,59 @@
     </div>
   </section>
 
+  <!-- Search and Quote (New Feature) -->
+  <section class="api-section featured">
+    <h2>🔍💰 Search & Quote (NEW)</h2>
+    <p class="feature-description">Search for a stock and get its live quote in one request</p>
+    <div class="input-group">
+      <label>
+        Search Query:
+        <input bind:value={searchAndQuoteQuery} placeholder="e.g., tesla, apple, reliance" />
+      </label>
+    </div>
+    <button on:click={fetchSearchAndQuote} disabled={loading[`/search-and-quote/${searchAndQuoteQuery}`]}>
+      {loading[`/search-and-quote/${searchAndQuoteQuery}`] ? 'Loading...' : `Search & Quote for "${searchAndQuoteQuery}"`}
+    </button>
+    
+    {#if searchAndQuoteData}
+      <div class="result-box">
+        {#if searchAndQuoteData.error}
+          <div class="error">Error: {searchAndQuoteData.error}</div>
+          {#if searchAndQuoteData.suggestion}
+            <p class="suggestion">💡 {searchAndQuoteData.suggestion}</p>
+          {/if}
+        {:else}
+          <div class="search-quote-result">
+            <h4>Found: {searchAndQuoteData.foundStock.name}</h4>
+            <p class="stock-info">
+              <strong>Symbol:</strong> {searchAndQuoteData.foundStock.symbol} | 
+              <strong>Exchange:</strong> {searchAndQuoteData.foundStock.exchange}
+            </p>
+            
+            <div class="quote-card">
+              <div class="price-info">
+                <div class="current-price">₹{formatPrice(searchAndQuoteData.quote.currentPrice)}</div>
+                <div class="change {searchAndQuoteData.quote.change >= 0 ? 'positive' : 'negative'}">
+                  {formatPrice(searchAndQuoteData.quote.change)} 
+                  ({formatPercent(searchAndQuoteData.quote.changePercent)})
+                </div>
+              </div>
+              <div class="details-grid">
+                <div><strong>Previous Close:</strong> ₹{formatPrice(searchAndQuoteData.quote.previousClose)}</div>
+                <div><strong>Day High:</strong> ₹{formatPrice(searchAndQuoteData.quote.dayHigh)}</div>
+                <div><strong>Day Low:</strong> ₹{formatPrice(searchAndQuoteData.quote.dayLow)}</div>
+                <div><strong>Volume:</strong> {formatVolume(searchAndQuoteData.quote.volume)}</div>
+                <div><strong>Exchange:</strong> {searchAndQuoteData.quote.exchangeName}</div>
+                <div><strong>Source:</strong> {searchAndQuoteData.quote.source}</div>
+                <div><strong>Cached:</strong> {searchAndQuoteData.quote.cached ? '✅' : '❌'}</div>
+              </div>
+            </div>
+          </div>
+        {/if}
+      </div>
+    {/if}
+  </section>
+
   <!-- Simple Quote -->
   <section class="api-section">
     <h2>💰 Simple Quote (Recommended)</h2>
@@ -185,6 +286,9 @@
       <div class="result-box">
         {#if simpleQuote.error}
           <div class="error">Error: {simpleQuote.error}</div>
+          {#if simpleQuote.suggestion}
+            <p class="suggestion">💡 {simpleQuote.suggestion}</p>
+          {/if}
         {:else}
           <div class="quote-card">
             <h3>{simpleQuote.symbol}</h3>
@@ -203,6 +307,9 @@
               <div><strong>Exchange:</strong> {simpleQuote.exchangeName}</div>
               <div><strong>Source:</strong> {simpleQuote.source}</div>
               <div><strong>Cached:</strong> {simpleQuote.cached ? '✅' : '❌'}</div>
+              {#if simpleQuote.lastUpdated}
+                <div><strong>Last Updated:</strong> {new Date(simpleQuote.lastUpdated).toLocaleString()}</div>
+              {/if}
             </div>
           </div>
         {/if}
@@ -221,6 +328,9 @@
       <div class="result-box">
         {#if enhancedQuote.error}
           <div class="error">Error: {enhancedQuote.error}</div>
+          {#if enhancedQuote.suggestion}
+            <p class="suggestion">💡 {enhancedQuote.suggestion}</p>
+          {/if}
         {:else}
           <div class="quote-card">
             <h3>{enhancedQuote.symbol}</h3>
@@ -233,9 +343,12 @@
             <div class="details-grid">
               <div><strong>Previous Close:</strong> ₹{formatPrice(enhancedQuote.previousClose)}</div>
               <div><strong>Currency:</strong> {enhancedQuote.currency}</div>
-              <div><strong>Market State:</strong> {enhancedQuote.marketState}</div>
+              <div><strong>Market State:</strong> {enhancedQuote.marketState || 'N/A'}</div>
               <div><strong>Source:</strong> {enhancedQuote.source}</div>
               <div><strong>Cached:</strong> {enhancedQuote.cached ? '✅' : '❌'}</div>
+              {#if enhancedQuote.lastUpdated}
+                <div><strong>Last Updated:</strong> {new Date(enhancedQuote.lastUpdated).toLocaleString()}</div>
+              {/if}
             </div>
           </div>
         {/if}
@@ -283,13 +396,19 @@
             <h3>{stockDetails.symbol}</h3>
             <div class="details-grid">
               <div><strong>Current Price:</strong> ₹{formatPrice(stockDetails.currentPrice)}</div>
-              <div><strong>Market Cap:</strong> ₹{formatVolume(stockDetails.marketCap)}</div>
+              <div><strong>Market Cap:</strong> {formatMarketCap(stockDetails.marketCap)}</div>
               <div><strong>52W High:</strong> ₹{formatPrice(stockDetails.fiftyTwoWeekHigh)}</div>
               <div><strong>52W Low:</strong> ₹{formatPrice(stockDetails.fiftyTwoWeekLow)}</div>
               <div><strong>P/E Ratio:</strong> {formatPrice(stockDetails.peRatio)}</div>
               <div><strong>EPS:</strong> {formatPrice(stockDetails.eps)}</div>
               <div><strong>Beta:</strong> {formatPrice(stockDetails.beta)}</div>
               <div><strong>Dividend Yield:</strong> {formatPercent(stockDetails.dividendYield * 100)}</div>
+              <div><strong>Change:</strong> 
+                <span class="change {stockDetails.change >= 0 ? 'positive' : 'negative'}">
+                  {formatPrice(stockDetails.change)} ({formatPercent(stockDetails.changePercent)})
+                </span>
+              </div>
+              <div><strong>Cached:</strong> {stockDetails.cached ? '✅' : '❌'}</div>
             </div>
           </div>
         {/if}
@@ -399,31 +518,57 @@
     {/if}
   </section>
 
-  <!-- Search Stocks -->
+  <!-- Enhanced Search Stocks -->
   <section class="api-section">
-    <h2>🔍 Search Stocks</h2>
+    <h2>🔍 Enhanced Search Stocks</h2>
+    <p class="feature-description">Search includes both local database and online sources</p>
     <div class="input-group">
       <label>
         Search Query:
-        <input bind:value={searchQuery} placeholder="reliance" />
+        <input bind:value={searchQuery} placeholder="e.g., tesla, apple, reliance, airtel" />
       </label>
     </div>
     <button on:click={fetchSearchResults} disabled={loading[`/search/${searchQuery}`]}>
-      {loading[`/search/${searchQuery}`] ? 'Loading...' : 'Search Stocks'}
+      {loading[`/search/${searchQuery}`] ? 'Loading...' : 'Search Stocks (Online + Local)'}
     </button>
     
     {#if searchResults}
       <div class="result-box">
-        <h4>Search Results for "{searchResults.query}"</h4>
+        <div class="search-header">
+          <h4>Search Results for "{searchResults.query}"</h4>
+          <div class="search-meta">
+            <span class="count">Found {searchResults.resultsCount} results</span>
+            <span class="source">Source: {searchResults.source}</span>
+          </div>
+        </div>
+        
         {#if searchResults.results && searchResults.results.length > 0}
-          <ul class="search-results">
+          <div class="search-results-grid">
             {#each searchResults.results as result}
-              <li>
-                <strong>{result.symbol}</strong> - {result.name || 'N/A'}
-                {#if result.sector}<span class="sector">({result.sector})</span>{/if}
-              </li>
+              <div class="search-result-card">
+                <div class="symbol">{result.symbol}</div>
+                <div class="name">{result.name || result.long_name || 'N/A'}</div>
+                {#if result.exchange}
+                  <div class="exchange">Exchange: {result.exchange}</div>
+                {/if}
+                {#if result.type}
+                  <div class="type">Type: {result.type}</div>
+                {/if}
+                {#if result.sector}
+                  <div class="sector">Sector: {result.sector}</div>
+                {/if}
+                <button 
+                  class="quick-quote-btn" 
+                  on:click={() => {
+                    selectedSymbol = result.symbol.replace('.NS', '');
+                    fetchSimpleQuote();
+                  }}
+                >
+                  Get Quote
+                </button>
+              </div>
             {/each}
-          </ul>
+          </div>
         {:else}
           <p>No results found</p>
         {/if}
@@ -491,7 +636,7 @@
     {/if}
   </section>
 
-  <!-- Cache Management -->
+  <!-- Enhanced Cache Management -->
   <section class="api-section">
     <h2>🧹 Cache Management</h2>
     <button on:click={cleanCache} disabled={loading['/cache/clean']}>
@@ -500,10 +645,22 @@
     
     {#if cacheCleanResult}
       <div class="result-box">
+        <h4>Cache Cleanup Results</h4>
         <p>{cacheCleanResult.message}</p>
-        {#if cacheCleanResult.entriesRemoved !== undefined}
-          <p><strong>Entries Removed:</strong> {cacheCleanResult.entriesRemoved}</p>
-        {/if}
+        <div class="cache-stats">
+          {#if cacheCleanResult.quoteCacheEntriesRemoved !== undefined}
+            <div><strong>Quote Cache Entries Removed:</strong> {cacheCleanResult.quoteCacheEntriesRemoved}</div>
+          {/if}
+          {#if cacheCleanResult.searchCacheEntriesRemoved !== undefined}
+            <div><strong>Search Cache Entries Removed:</strong> {cacheCleanResult.searchCacheEntriesRemoved}</div>
+          {/if}
+          {#if cacheCleanResult.totalEntriesRemoved !== undefined}
+            <div><strong>Total Entries Removed:</strong> {cacheCleanResult.totalEntriesRemoved}</div>
+          {/if}
+          {#if cacheCleanResult.entriesRemoved !== undefined}
+            <div><strong>Entries Removed:</strong> {cacheCleanResult.entriesRemoved}</div>
+          {/if}
+        </div>
       </div>
     {/if}
   </section>
@@ -535,9 +692,25 @@
     background: #f9fafb;
   }
   
+  .api-section.featured {
+    border: 2px solid #10b981;
+    background: linear-gradient(135deg, #ecfdf5 0%, #f0fdf4 100%);
+  }
+  
+  .api-section.settings-section {
+    background: linear-gradient(135deg, #fef3c7 0%, #fef7cd 100%);
+    border: 1px solid #f59e0b;
+  }
+  
   .api-section h2 {
     margin-top: 0;
     color: #374151;
+  }
+  
+  .feature-description {
+    color: #6b7280;
+    font-style: italic;
+    margin-bottom: 15px;
   }
   
   .input-group {
@@ -552,6 +725,28 @@
     flex-direction: column;
     gap: 5px;
     min-width: 200px;
+  }
+  
+  .checkbox-label {
+    flex-direction: row !important;
+    align-items: center;
+    gap: 10px !important;
+    min-width: auto !important;
+  }
+  
+  .note {
+    color: #6b7280;
+    font-size: 0.9em;
+    margin-top: 10px;
+  }
+  
+  .suggestion {
+    color: #059669;
+    background: #ecfdf5;
+    padding: 10px;
+    border-radius: 4px;
+    border: 1px solid #10b981;
+    margin-top: 10px;
   }
   
   input, select {
@@ -579,6 +774,17 @@
   button:disabled {
     background: #9ca3af;
     cursor: not-allowed;
+  }
+  
+  .quick-quote-btn {
+    background: #059669;
+    font-size: 12px;
+    padding: 6px 12px;
+    margin: 5px 0 0 0;
+  }
+  
+  .quick-quote-btn:hover:not(:disabled) {
+    background: #047857;
   }
   
   .button-group {
@@ -638,6 +844,123 @@
   
   .details-card .details-grid {
     grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  }
+  
+  .features-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 10px;
+    margin-bottom: 15px;
+  }
+  
+  .feature-item {
+    background: white;
+    padding: 10px;
+    border-radius: 4px;
+    border: 1px solid #e5e7eb;
+  }
+  
+  .endpoints-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-bottom: 15px;
+  }
+  
+  .endpoint {
+    background: #f3f4f6;
+    padding: 5px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+    display: inline-block;
+  }
+  
+  .notes-list {
+    margin: 0;
+    padding-left: 20px;
+  }
+  
+  .search-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  
+  .search-meta {
+    display: flex;
+    gap: 15px;
+    font-size: 0.9em;
+    color: #6b7280;
+  }
+  
+  .count {
+    font-weight: 600;
+  }
+  
+  .source {
+    background: #dbeafe;
+    padding: 2px 8px;
+    border-radius: 12px;
+    color: #1d4ed8;
+  }
+  
+  .search-results-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 15px;
+  }
+  
+  .search-result-card {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    padding: 15px;
+  }
+  
+  .search-result-card .symbol {
+    font-weight: bold;
+    font-size: 1.1em;
+    color: #1d4ed8;
+    margin-bottom: 5px;
+  }
+  
+  .search-result-card .name {
+    color: #374151;
+    margin-bottom: 8px;
+    font-size: 0.95em;
+  }
+  
+  .search-result-card .exchange,
+  .search-result-card .type,
+  .search-result-card .sector {
+    font-size: 0.85em;
+    color: #6b7280;
+    margin-bottom: 3px;
+  }
+  
+  .search-quote-result {
+    text-align: center;
+  }
+  
+  .stock-info {
+    color: #6b7280;
+    margin-bottom: 20px;
+  }
+  
+  .cache-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 10px;
+    margin-top: 15px;
+  }
+  
+  .cache-stats > div {
+    background: #f3f4f6;
+    padding: 10px;
+    border-radius: 4px;
   }
   
   .error {
@@ -755,12 +1078,22 @@
       min-width: auto;
     }
     
-    .comparison-grid {
+    .comparison-grid, .search-results-grid {
       grid-template-columns: 1fr;
     }
     
     .details-grid {
       grid-template-columns: 1fr;
+    }
+    
+    .search-header {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+    
+    .search-meta {
+      flex-direction: column;
+      gap: 5px;
     }
   }
 </style>

@@ -93,6 +93,17 @@ CREATE TABLE IF NOT EXISTS search_index (
     FOREIGN KEY (symbol) REFERENCES stocks(symbol)
 );
 
+-- 8. Search Cache (Online search results cache)
+CREATE TABLE IF NOT EXISTS search_cache (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    query VARCHAR(255) UNIQUE NOT NULL,
+    results TEXT NOT NULL, -- JSON array of search results
+    result_count INTEGER DEFAULT 0,
+    source VARCHAR(50) DEFAULT 'online', -- 'online', 'manual'
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME DEFAULT (datetime('now', '+1 hour'))
+);
+
 -- Create indexes for better performance (separate statements)
 CREATE INDEX IF NOT EXISTS idx_quotes_symbol_time ON quotes(symbol, last_updated DESC);
 CREATE INDEX IF NOT EXISTS idx_historical_symbol_period ON historical_data(symbol, period, date DESC);
@@ -101,3 +112,8 @@ CREATE INDEX IF NOT EXISTS idx_search_terms ON search_index(search_terms);
 CREATE INDEX IF NOT EXISTS idx_symbol_type ON cache_metadata(symbol, data_type);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_historical_unique ON historical_data(symbol, date, period, interval_type);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_popular_unique ON popular_stocks(symbol, category);
+
+-- New indexes for search cache
+CREATE INDEX IF NOT EXISTS idx_search_cache_query ON search_cache(query);
+CREATE INDEX IF NOT EXISTS idx_search_cache_expires ON search_cache(expires_at);
+CREATE INDEX IF NOT EXISTS idx_search_cache_source ON search_cache(source);
