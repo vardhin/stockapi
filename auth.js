@@ -529,7 +529,12 @@ class AuthManager {
             access_token: accessToken,
             refresh_token: refreshToken,
             token_type: 'bearer',
-            expires_in: ACCESS_TOKEN_EXPIRE_MINUTES * 60
+            expires_in: ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            user: {
+                id: userId,
+                email: email,
+                fullName: fullName.trim()
+            }
         };
     }
 

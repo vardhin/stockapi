@@ -67,6 +67,10 @@ const limiter = rateLimit({
     message: {
         error: 'Too many requests from this IP, please try again later.',
         retryAfter: '15 minutes'
+    },
+    // Skip validation for local development
+    validate: {
+        xForwardedForHeader: false
     }
 });
 
@@ -77,6 +81,10 @@ const authLimiter = rateLimit({
     message: {
         error: 'Too many authentication attempts from this IP, please try again later.',
         retryAfter: '15 minutes'
+    },
+    // Skip validation for local development
+    validate: {
+        xForwardedForHeader: false
     }
 });
 
@@ -215,6 +223,80 @@ app.get('/api/auth/me', authenticate(), asyncHandler(async (req, res) => {
         data: req.user,
         timestamp: new Date().toISOString()
     });
+}));
+
+// Add this new simplified signup endpoint before the existing one
+app.post('/api/auth/signup-simple', asyncHandler(async (req, res) => {
+    const { email, password, confirmPassword, fullName } = req.body;
+
+    // Validate required fields
+    if (!email || !password || !confirmPassword || !fullName) {
+        return res.status(400).json({
+            success: false,
+            message: 'All fields are required: email, password, confirmPassword, fullName'
+        });
+    }
+
+    try {
+        const result = await signup({ email, password, confirmPassword, fullName }, req);
+        
+        // Return a flatter structure for easier parsing
+        res.status(201).json({
+            success: true,
+            message: 'User registered successfully',
+            access_token: result.access_token,
+            refresh_token: result.refresh_token,
+            user_id: result.user.id.toString(),
+            user_email: result.user.email,
+            user_fullName: result.user.fullName,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        res.status(400).json({
+            success: false,
+            message: error.message
+        });
+    }
+}));
+
+// Add this new simplified signin endpoint after the signup-simple endpoint
+app.post('/api/auth/signin-simple', asyncHandler(async (req, res) => {
+    const { email, password } = req.body;
+
+    // Validate required fields
+    if (!email || !password) {
+        return res.status(400).json({
+            success: false,
+            message: 'Email and password are required'
+        });
+    }
+
+    try {
+        const result = await signin({ email, password }, req);
+        
+        // Get user data separately since it's not included in signin result
+        const { AuthManager } = require('./auth');
+        const authManager = new AuthManager();
+        await authManager.db.initDb(); // Ensure database is ready
+        const user = await authManager.db.getUserByEmail(email);
+        
+        // Return a flatter structure for easier parsing
+        res.json({
+            success: true,
+            message: 'User logged in successfully',
+            access_token: result.access_token,
+            refresh_token: result.refresh_token,
+            user_id: user.id.toString(),
+            user_email: user.email,
+            user_fullName: user.full_name,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        res.status(400).json({
+            success: false,
+            message: error.message
+        });
+    }
 }));
 
 // ================================
