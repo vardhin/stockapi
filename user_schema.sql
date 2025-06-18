@@ -58,8 +58,21 @@ CREATE TABLE IF NOT EXISTS wallet_transactions (
     FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 );
 
+-- 5. User Watchlist (Stocks user is watching)
+CREATE TABLE IF NOT EXISTS user_watchlist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    symbol VARCHAR(20) NOT NULL,
+    company_name VARCHAR(255),
+    added_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+    UNIQUE(user_id, symbol)
+);
+
 -- Create indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_portfolio_user ON portfolio_holdings(user_id);
 CREATE INDEX IF NOT EXISTS idx_stock_transactions_user ON stock_transactions(user_id, transaction_date DESC);
 CREATE INDEX IF NOT EXISTS idx_wallet_transactions_user ON wallet_transactions(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_holdings_symbol ON portfolio_holdings(symbol);
+CREATE INDEX IF NOT EXISTS idx_watchlist_user ON user_watchlist(user_id);
+CREATE INDEX IF NOT EXISTS idx_watchlist_symbol ON user_watchlist(symbol);

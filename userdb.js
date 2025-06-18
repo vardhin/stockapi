@@ -120,11 +120,24 @@ CREATE TABLE IF NOT EXISTS wallet_transactions (
     FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 );
 
+-- 5. User Watchlist (Stocks user is watching)
+CREATE TABLE IF NOT EXISTS user_watchlist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    symbol VARCHAR(20) NOT NULL,
+    company_name VARCHAR(255),
+    notes TEXT,
+    added_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+    UNIQUE(user_id, symbol)
+);
+
 -- Create indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_portfolio_user ON portfolio_holdings(user_id);
 CREATE INDEX IF NOT EXISTS idx_stock_transactions_user ON stock_transactions(user_id, transaction_date DESC);
 CREATE INDEX IF NOT EXISTS idx_wallet_transactions_user ON wallet_transactions(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_holdings_symbol ON portfolio_holdings(symbol);
+CREATE INDEX IF NOT EXISTS idx_watchlist_user ON user_watchlist(user_id);
 `;
 
         fs.writeFileSync(schemaPath, schema);
@@ -646,6 +659,106 @@ CREATE INDEX IF NOT EXISTS idx_holdings_symbol ON portfolio_holdings(symbol);
                         }
                     });
             }
+        });
+    }
+
+    // Watchlist Methods
+    async addToWatchlist(userId, symbol, companyName = null) {
+        await this.init();
+        
+        return new Promise((resolve, reject) => {
+            const db = this.getConnection();
+            const stmt = db.prepare(`
+                INSERT OR IGNORE INTO user_watchlist (user_id, symbol, company_name)
+                VALUES (?, ?, ?)
+            `);
+            
+            stmt.run([userId, symbol.toUpperCase(), companyName], function(err) {
+                stmt.finalize();
+                
+                if (err) {
+                    reject(err);
+                } else {
+                    resolve({
+                        id: this.lastID,
+                        added: this.changes > 0,
+                        message: this.changes > 0 ? 'Added to watchlist' : 'Already in watchlist'
+                    });
+                }
+                
+                db.close();
+            });
+        });
+    }
+
+    async removeFromWatchlist(userId, symbol) {
+        await this.init();
+        
+        return new Promise((resolve, reject) => {
+            const db = this.getConnection();
+            const stmt = db.prepare('DELETE FROM user_watchlist WHERE user_id = ? AND symbol = ?');
+            
+            stmt.run([userId, symbol.toUpperCase()], function(err) {
+                stmt.finalize();
+                
+                if (err) {
+                    reject(err);
+                } else {
+                    resolve({
+                        removed: this.changes > 0,
+                        message: this.changes > 0 ? 'Removed from watchlist' : 'Not found in watchlist'
+                    });
+                }
+                
+                db.close();
+            });
+        });
+    }
+
+    async getWatchlist(userId) {
+        await this.init();
+        
+        const sql = `
+            SELECT * FROM user_watchlist 
+            WHERE user_id = ?
+            ORDER BY added_date DESC
+        `;
+        
+        return new Promise((resolve, reject) => {
+            const db = this.getConnection();
+            const stmt = db.prepare(sql);
+            stmt.all([userId], (err, rows) => {
+                stmt.finalize();
+                
+                if (err) {
+                    reject(err);
+                } else {
+                    resolve(rows);
+                }
+                
+                db.close();
+            });
+        });
+    }
+
+    async isInWatchlist(userId, symbol) {
+        await this.init();
+        
+        return new Promise((resolve, reject) => {
+            const db = this.getConnection();
+            const stmt = db.prepare('SELECT id FROM user_watchlist WHERE user_id = ? AND symbol = ?');
+            
+            stmt.get([userId, symbol.toUpperCase()], (err, row) => {
+                stmt.finalize();
+                
+                if (err) {
+                    reject(err);
+                } else {
+                    resolve(!!row);
+                }
+                
+                db.close();
+            });
         });
     }
 

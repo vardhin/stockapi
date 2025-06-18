@@ -519,14 +519,194 @@ async function canAffordStock(userId, symbol, quantity, pricePerShare = null) {
 }
 
 /**
- * Close database connection
+ * Add stock to user's watchlist
  */
-async function closeUserDatabase() {
-    return await userDb.close();
+async function addToWatchlist(userId, symbol) {
+    try {
+        // Get company name from stock data
+        let companyName = symbol;
+        try {
+            const stockData = await getSimpleStockData(symbol);
+            companyName = stockData.symbol || symbol;
+        } catch (error) {
+            console.log(`Could not fetch company name for ${symbol}`);
+        }
+
+        const result = await userDb.addToWatchlist(userId, symbol, companyName);
+        
+        return {
+            success: true,
+            added: result.added,
+            symbol: symbol.toUpperCase(),
+            companyName: companyName,
+            message: result.message
+        };
+    } catch (error) {
+        return {
+            success: false,
+            error: `Failed to add to watchlist: ${error.message}`
+        };
+    }
 }
 
+/**
+ * Remove stock from user's watchlist
+ */
+async function removeFromWatchlist(userId, symbol) {
+    try {
+        const result = await userDb.removeFromWatchlist(userId, symbol);
+        
+        return {
+            success: true,
+            removed: result.removed,
+            symbol: symbol.toUpperCase(),
+            message: result.message
+        };
+    } catch (error) {
+        return {
+            success: false,
+            error: `Failed to remove from watchlist: ${error.message}`
+        };
+    }
+}
+
+/**
+ * Get user's watchlist with current prices (flattened response)
+ */
+async function getUserWatchlist(userId, includePrices = true) {
+    try {
+        const watchlist = await userDb.getWatchlist(userId);
+        
+        if (watchlist.length === 0) {
+            return {
+                success: true,
+                totalStocks: 0,
+                stocks: []
+            };
+        }
+
+        let stocks = [];
+
+        // Fetch current prices if requested
+        if (includePrices) {
+            for (const stock of watchlist) {
+                try {
+                    const stockData = await getSimpleStockData(stock.symbol);
+                    const changeAmount = stockData.currentPrice - stockData.previousClose;
+                    const changePercent = ((changeAmount / stockData.previousClose) * 100);
+                    
+                    stocks.push({
+                        id: stock.id,
+                        symbol: stock.symbol,
+                        companyName: stock.company_name,
+                        addedDate: stock.added_date,
+                        currentPrice: stockData.currentPrice,
+                        previousClose: stockData.previousClose,
+                        dayHigh: stockData.dayHigh,
+                        dayLow: stockData.dayLow,
+                        volume: stockData.volume,
+                        change: changeAmount,
+                        changePercent: changePercent,
+                        isPositive: changeAmount >= 0,
+                        priceUpdated: true
+                    });
+                } catch (error) {
+                    console.error(`Failed to fetch price for ${stock.symbol}:`, error.message);
+                    stocks.push({
+                        id: stock.id,
+                        symbol: stock.symbol,
+                        companyName: stock.company_name,
+                        addedDate: stock.added_date,
+                        priceUpdated: false,
+                        error: 'Price unavailable'
+                    });
+                }
+                
+                // Add small delay to avoid rate limiting
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+        } else {
+            stocks = watchlist.map(stock => ({
+                id: stock.id,
+                symbol: stock.symbol,
+                companyName: stock.company_name,
+                addedDate: stock.added_date
+            }));
+        }
+
+        return {
+            success: true,
+            totalStocks: stocks.length,
+            stocks: stocks
+        };
+    } catch (error) {
+        return {
+            success: false,
+            error: `Failed to get watchlist: ${error.message}`
+        };
+    }
+}
+
+/**
+ * Check if stock is in user's watchlist (flattened response)
+ */
+async function isStockInWatchlist(userId, symbol) {
+    try {
+        const isInWatchlist = await userDb.isInWatchlist(userId, symbol);
+        
+        return {
+            success: true,
+            symbol: symbol.toUpperCase(),
+            inWatchlist: isInWatchlist
+        };
+    } catch (error) {
+        return {
+            success: false,
+            error: `Failed to check watchlist: ${error.message}`
+        };
+    }
+}
+
+/**
+ * Check if user owns a specific stock and how much (flattened response)
+ */
+async function getUserStockHolding(userId, symbol) {
+    try {
+        const portfolio = await userDb.getPortfolio(userId);
+        const holding = portfolio.find(h => h.symbol.toUpperCase() === symbol.toUpperCase());
+        
+        if (!holding) {
+            return {
+                success: true,
+                symbol: symbol.toUpperCase(),
+                owns: false,
+                quantity: 0,
+                message: `You don't own any shares of ${symbol}`
+            };
+        }
+
+        return {
+            success: true,
+            symbol: holding.symbol,
+            owns: true,
+            quantity: holding.quantity,
+            averagePrice: parseFloat(holding.average_price),
+            investedAmount: parseFloat(holding.invested_amount),
+            currentPrice: parseFloat(holding.current_price || holding.average_price),
+            currentValue: holding.quantity * (holding.current_price || holding.average_price),
+            profitLoss: parseFloat(holding.profit_loss || 0),
+            firstBuyDate: holding.first_buy_date
+        };
+    } catch (error) {
+        return {
+            success: false,
+            error: `Failed to check stock holding: ${error.message}`
+        };
+    }
+}
+
+// Core wallet functions
 module.exports = {
-    // Core wallet functions
     getUserWallet,
     addUserBalance,
     removeUserBalance,
@@ -542,9 +722,13 @@ module.exports = {
     getWalletTransactionHistory,
     getUserFinancialSummary,
     
-    // Database management
-    closeUserDatabase,
-    
     // Direct database access (if needed)
-    userDb
+    userDb,
+
+    // Watchlist functions
+    addToWatchlist,
+    removeFromWatchlist,
+    getUserWatchlist,
+    isStockInWatchlist,
+    getUserStockHolding
 };

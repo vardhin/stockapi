@@ -68,7 +68,14 @@ const {
     getTransactionHistory,
     getWalletTransactionHistory,
     getUserFinancialSummary,
-    closeUserDatabase
+    closeUserDatabase,
+    
+    // Watchlist functions
+    addToWatchlist,
+    removeFromWatchlist,
+    getUserWatchlist,
+    isStockInWatchlist,
+    getUserStockHolding
 } = require('./userUtils');
 
 const app = express();
@@ -96,7 +103,7 @@ const asyncHandler = (fn) => (req, res, next) => {
 app.get('/', (req, res) => {
     res.json({
         message: 'Stock API Server with Authentication & Trading',
-        version: '1.3.0',
+        version: '1.4.0', // Update version
         endpoints: {
             // Authentication endpoints
             'POST /api/auth/signup': 'User registration (with ₹1,000,000 starting balance)',
@@ -141,6 +148,13 @@ app.get('/', (req, res) => {
             'GET /api/trending': 'Get trending stocks (with optional ?update=true to refresh)',
             'POST /api/trending/update': 'Update trending stocks by scraping (requires auth)',
             'GET /api/trending/scrape': 'Scrape trending stocks without storing (requires auth)',
+            
+            // Watchlist endpoints
+            'GET /api/user/watchlist': 'Get user\'s watchlist',
+            'POST /api/user/watchlist': 'Add stock to watchlist',
+            'DELETE /api/user/watchlist/:symbol': 'Remove stock from watchlist',
+            'GET /api/user/watchlist/check/:symbol': 'Check if stock is in watchlist',
+            'GET /api/user/holdings/:symbol': 'Check if user owns specific stock and quantity',
             
             'DELETE /api/cache/clean': 'Clean expired cache (requires auth)',
             'GET /api/health': 'Health check'
@@ -1108,6 +1122,140 @@ app.get('/api/trending/scrape', authenticate(), asyncHandler(async (req, res) =>
         },
         timestamp: new Date().toISOString()
     });
+}));
+
+// ================================
+// WATCHLIST ENDPOINTS (Protected)
+// ================================
+
+// Get user's watchlist
+app.get('/api/user/watchlist', authenticate(), asyncHandler(async (req, res) => {
+    const { prices = 'true' } = req.query;
+    const includePrices = prices !== 'false';
+    
+    const result = await getUserWatchlist(req.user.id, includePrices);
+    
+    if (result.success) {
+        res.json({
+            success: true,
+            totalStocks: result.totalStocks,
+            stocks: result.stocks,
+            timestamp: new Date().toISOString()
+        });
+    } else {
+        res.status(400).json({
+            success: false,
+            error: result.error,
+            timestamp: new Date().toISOString()
+        });
+    }
+}));
+
+// Add stock to watchlist (remove notes parameter)
+app.post('/api/user/watchlist', authenticate(), asyncHandler(async (req, res) => {
+    const { symbol } = req.body;
+    
+    if (!symbol) {
+        return res.status(400).json({
+            success: false,
+            error: 'Symbol is required',
+            timestamp: new Date().toISOString()
+        });
+    }
+    
+    const result = await addToWatchlist(req.user.id, symbol.toUpperCase());
+    
+    if (result.success) {
+        res.json({
+            success: true,
+            added: result.added,
+            symbol: result.symbol,
+            companyName: result.companyName,
+            message: result.message,
+            timestamp: new Date().toISOString()
+        });
+    } else {
+        res.status(400).json({
+            success: false,
+            error: result.error,
+            timestamp: new Date().toISOString()
+        });
+    }
+}));
+
+// Remove stock from watchlist
+app.delete('/api/user/watchlist/:symbol', authenticate(), asyncHandler(async (req, res) => {
+    const { symbol } = req.params;
+    
+    const result = await removeFromWatchlist(req.user.id, symbol.toUpperCase());
+    
+    if (result.success) {
+        res.json({
+            success: true,
+            removed: result.removed,
+            symbol: result.symbol,
+            message: result.message,
+            timestamp: new Date().toISOString()
+        });
+    } else {
+        res.status(400).json({
+            success: false,
+            error: result.error,
+            timestamp: new Date().toISOString()
+        });
+    }
+}));
+
+// Check if stock is in watchlist
+app.get('/api/user/watchlist/check/:symbol', authenticate(), asyncHandler(async (req, res) => {
+    const { symbol } = req.params;
+    
+    const result = await isStockInWatchlist(req.user.id, symbol.toUpperCase());
+    
+    if (result.success) {
+        res.json({
+            success: true,
+            symbol: result.symbol,
+            inWatchlist: result.inWatchlist,
+            timestamp: new Date().toISOString()
+        });
+    } else {
+        res.status(400).json({
+            success: false,
+            error: result.error,
+            timestamp: new Date().toISOString()
+        });
+    }
+}));
+
+// Check specific stock holding
+app.get('/api/user/holdings/:symbol', authenticate(), asyncHandler(async (req, res) => {
+    const { symbol } = req.params;
+    
+    const result = await getUserStockHolding(req.user.id, symbol.toUpperCase());
+    
+    if (result.success) {
+        res.json({
+            success: result.success,
+            symbol: result.symbol,
+            owns: result.owns,
+            quantity: result.quantity || 0,
+            averagePrice: result.averagePrice || 0,
+            investedAmount: result.investedAmount || 0,
+            currentPrice: result.currentPrice || 0,
+            currentValue: result.currentValue || 0,
+            profitLoss: result.profitLoss || 0,
+            firstBuyDate: result.firstBuyDate || null,
+            message: result.message || '',
+            timestamp: new Date().toISOString()
+        });
+    } else {
+        res.status(400).json({
+            success: false,
+            error: result.error,
+            timestamp: new Date().toISOString()
+        });
+    }
 }));
 
 // ================================
