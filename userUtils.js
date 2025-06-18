@@ -265,6 +265,14 @@ async function sellStock(userId, symbol, quantity, pricePerShare = null) {
         // Execute the stock sale
         const result = await userDb.sellStock(userId, symbol, quantity, stockPrice);
         
+        // Add the sale proceeds to wallet balance
+        // This was the problematic line - it should call addUserBalance directly
+        const walletResult = await addUserBalance(userId, totalValue, `Sold ${quantity} shares of ${symbol} at ₹${stockPrice.toFixed(2)} per share`);
+        
+        if (!walletResult.success) {
+            throw new Error(`Failed to update wallet: ${walletResult.error}`);
+        }
+        
         // Update wallet totals
         await updateWalletTotals(userId);
         
