@@ -687,13 +687,36 @@ app.get('/api/stock/:symbol/nse', asyncHandler(async (req, res) => {
 // Get intraday data (1 day, 1-minute intervals)
 app.get('/api/stock/:symbol/intraday', asyncHandler(async (req, res) => {
     const { symbol } = req.params;
-    const { cache = 'true' } = req.query;
+    const { cache = 'true', debug = 'false' } = req.query;
     const useCache = cache !== 'false';
 
+    console.log(`🔍 Fetching intraday data for ${symbol.toUpperCase()}, cache: ${useCache}`);
+    
     const data = await getIntradayData(symbol.toUpperCase(), useCache);
+    
+    // Debug logging
+    if (debug === 'true') {
+        console.log('Raw data from getIntradayData:', JSON.stringify(data, null, 2));
+    }
+    
+    // Extract historical data - check multiple possible properties
+    const historicalData = data.historical || data.data || data.prices || [];
+    
+    // Flatten the response
     res.json({
         success: true,
-        data,
+        symbol: symbol.toUpperCase(),
+        period: '1d',
+        interval: '1m',
+        count: historicalData.length,
+        prices: historicalData,
+        meta: {
+            currency: data.currency || 'INR',
+            exchange: data.exchange || 'NSE',
+            lastUpdate: data.lastUpdate,
+            cached: data.cached || false
+        },
+        debug: debug === 'true' ? data : undefined,
         timestamp: new Date().toISOString()
     });
 }));
@@ -701,13 +724,36 @@ app.get('/api/stock/:symbol/intraday', asyncHandler(async (req, res) => {
 // Get weekly data (5 days, 5-minute intervals)
 app.get('/api/stock/:symbol/weekly', asyncHandler(async (req, res) => {
     const { symbol } = req.params;
-    const { cache = 'true' } = req.query;
+    const { cache = 'true', debug = 'false' } = req.query;
     const useCache = cache !== 'false';
 
+    console.log(`🔍 Fetching weekly data for ${symbol.toUpperCase()}, cache: ${useCache}`);
+    
     const data = await getWeeklyData(symbol.toUpperCase(), useCache);
+    
+    // Debug logging
+    if (debug === 'true') {
+        console.log('Raw data from getWeeklyData:', JSON.stringify(data, null, 2));
+    }
+    
+    // Extract historical data - check multiple possible properties
+    const historicalData = data.historical || data.data || data.prices || [];
+    
+    // Flatten the response
     res.json({
         success: true,
-        data,
+        symbol: symbol.toUpperCase(),
+        period: '5d',
+        interval: '5m',
+        count: historicalData.length,
+        prices: historicalData,
+        meta: {
+            currency: data.currency || 'INR',
+            exchange: data.exchange || 'NSE',
+            lastUpdate: data.lastUpdate,
+            cached: data.cached || false
+        },
+        debug: debug === 'true' ? data : undefined,
         timestamp: new Date().toISOString()
     });
 }));
@@ -715,13 +761,36 @@ app.get('/api/stock/:symbol/weekly', asyncHandler(async (req, res) => {
 // Get monthly data (1 month, daily intervals)
 app.get('/api/stock/:symbol/monthly', asyncHandler(async (req, res) => {
     const { symbol } = req.params;
-    const { cache = 'true' } = req.query;
+    const { cache = 'true', debug = 'false' } = req.query;
     const useCache = cache !== 'false';
 
+    console.log(`🔍 Fetching monthly data for ${symbol.toUpperCase()}, cache: ${useCache}`);
+    
     const data = await getMonthlyData(symbol.toUpperCase(), useCache);
+    
+    // Debug logging
+    if (debug === 'true') {
+        console.log('Raw data from getMonthlyData:', JSON.stringify(data, null, 2));
+    }
+    
+    // Extract historical data - check multiple possible properties
+    const historicalData = data.historical || data.data || data.prices || [];
+    
+    // Flatten the response
     res.json({
         success: true,
-        data,
+        symbol: symbol.toUpperCase(),
+        period: '1mo',
+        interval: '1d',
+        count: historicalData.length,
+        prices: historicalData,
+        meta: {
+            currency: data.currency || 'INR',
+            exchange: data.exchange || 'NSE',
+            lastUpdate: data.lastUpdate,
+            cached: data.cached || false
+        },
+        debug: debug === 'true' ? data : undefined,
         timestamp: new Date().toISOString()
     });
 }));
@@ -729,13 +798,36 @@ app.get('/api/stock/:symbol/monthly', asyncHandler(async (req, res) => {
 // Get quarterly data (3 months, daily intervals)
 app.get('/api/stock/:symbol/quarterly', asyncHandler(async (req, res) => {
     const { symbol } = req.params;
-    const { cache = 'true' } = req.query;
+    const { cache = 'true', debug = 'false' } = req.query;
     const useCache = cache !== 'false';
 
+    console.log(`🔍 Fetching quarterly data for ${symbol.toUpperCase()}, cache: ${useCache}`);
+    
     const data = await getQuarterlyData(symbol.toUpperCase(), useCache);
+    
+    // Debug logging
+    if (debug === 'true') {
+        console.log('Raw data from getQuarterlyData:', JSON.stringify(data, null, 2));
+    }
+    
+    // Extract historical data - check multiple possible properties
+    const historicalData = data.historical || data.data || data.prices || [];
+    
+    // Flatten the response
     res.json({
         success: true,
-        data,
+        symbol: symbol.toUpperCase(),
+        period: '3mo',
+        interval: '1d',
+        count: historicalData.length,
+        prices: historicalData,
+        meta: {
+            currency: data.currency || 'INR',
+            exchange: data.exchange || 'NSE',
+            lastUpdate: data.lastUpdate,
+            cached: data.cached || false
+        },
+        debug: debug === 'true' ? data : undefined,
         timestamp: new Date().toISOString()
     });
 }));
@@ -743,13 +835,36 @@ app.get('/api/stock/:symbol/quarterly', asyncHandler(async (req, res) => {
 // Get yearly data (1 year, weekly intervals)
 app.get('/api/stock/:symbol/yearly', asyncHandler(async (req, res) => {
     const { symbol } = req.params;
-    const { cache = 'true' } = req.query;
+    const { cache = 'true', debug = 'false' } = req.query;
     const useCache = cache !== 'false';
 
+    console.log(`🔍 Fetching yearly data for ${symbol.toUpperCase()}, cache: ${useCache}`);
+    
     const data = await getYearlyData(symbol.toUpperCase(), useCache);
+    
+    // Debug logging
+    if (debug === 'true') {
+        console.log('Raw data from getYearlyData:', JSON.stringify(data, null, 2));
+    }
+    
+    // Extract historical data - check multiple possible properties
+    const historicalData = data.historical || data.data || data.prices || [];
+    
+    // Flatten the response
     res.json({
         success: true,
-        data,
+        symbol: symbol.toUpperCase(),
+        period: '1y',
+        interval: '1wk',
+        count: historicalData.length,
+        prices: historicalData,
+        meta: {
+            currency: data.currency || 'INR',
+            exchange: data.exchange || 'NSE',
+            lastUpdate: data.lastUpdate,
+            cached: data.cached || false
+        },
+        debug: debug === 'true' ? data : undefined,
         timestamp: new Date().toISOString()
     });
 }));
@@ -757,14 +872,36 @@ app.get('/api/stock/:symbol/yearly', asyncHandler(async (req, res) => {
 // Get custom historical data
 app.get('/api/stock/:symbol/historical', asyncHandler(async (req, res) => {
     const { symbol } = req.params;
-    const { period = '1mo', interval = '1d', cache = 'true' } = req.query;
+    const { period = '1mo', interval = '1d', cache = 'true', debug = 'false' } = req.query;
     const useCache = cache !== 'false';
 
+    console.log(`🔍 Fetching historical data for ${symbol.toUpperCase()}, period: ${period}, interval: ${interval}, cache: ${useCache}`);
+    
     const data = await getHistoricalData(symbol.toUpperCase(), period, interval, useCache);
+    
+    // Debug logging
+    if (debug === 'true') {
+        console.log('Raw data from getHistoricalData:', JSON.stringify(data, null, 2));
+    }
+    
+    // Extract historical data - check multiple possible properties
+    const historicalData = data.historical || data.data || data.prices || [];
+    
+    // Flatten the response
     res.json({
         success: true,
-        data,
-        parameters: { period, interval },
+        symbol: symbol.toUpperCase(),
+        period: period,
+        interval: interval,
+        count: historicalData.length,
+        prices: historicalData,
+        meta: {
+            currency: data.currency || 'INR',
+            exchange: data.exchange || 'NSE',
+            lastUpdate: data.lastUpdate,
+            cached: data.cached || false
+        },
+        debug: debug === 'true' ? data : undefined,
         timestamp: new Date().toISOString()
     });
 }));
