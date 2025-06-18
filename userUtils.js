@@ -5,24 +5,68 @@ const { getSimpleStockData } = require('./stockUtils');
 const userDb = new UserStockDatabase();
 
 /**
- * Get user wallet balance and details
- * @param {number} userId - User ID
- * @returns {Object} Wallet details
+ * Update wallet totals based on current portfolio
+ */
+async function updateWalletTotals(userId) {
+    try {
+        const portfolio = await userDb.getPortfolio(userId);
+        
+        let totalInvested = 0;
+        let totalCurrentValue = 0;
+        
+        for (const holding of portfolio) {
+            totalInvested += parseFloat(holding.invested_amount || 0);
+            totalCurrentValue += parseFloat(holding.current_value || holding.invested_amount || 0);
+        }
+        
+        const totalProfitLoss = totalCurrentValue - totalInvested;
+        
+        // Update wallet table
+        await new Promise((resolve, reject) => {
+            const db = userDb.getConnection();
+            const stmt = db.prepare(`
+                UPDATE user_wallets 
+                SET total_invested = ?, total_current_value = ?, total_profit_loss = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+            `);
+            
+            stmt.run([totalInvested, totalCurrentValue, totalProfitLoss, userId], function(err) {
+                stmt.finalize();
+                db.close();
+                if (err) reject(err);
+                else resolve();
+            });
+        });
+        
+        return { totalInvested, totalCurrentValue, totalProfitLoss };
+    } catch (error) {
+        console.error('Failed to update wallet totals:', error.message);
+        return { totalInvested: 0, totalCurrentValue: 0, totalProfitLoss: 0 };
+    }
+}
+
+/**
+ * Get user wallet balance and details (FLATTENED)
  */
 async function getUserWallet(userId) {
     try {
+        // Update wallet totals first
+        await updateWalletTotals(userId);
+        
         const wallet = await userDb.getWalletBalance(userId);
+        
         return {
             success: true,
-            data: {
-                userId: wallet.user_id,
-                balance: parseFloat(wallet.balance),
-                totalInvested: parseFloat(wallet.total_invested),
-                totalCurrentValue: parseFloat(wallet.total_current_value),
-                totalProfitLoss: parseFloat(wallet.total_profit_loss),
-                createdAt: wallet.created_at,
-                updatedAt: wallet.updated_at
-            }
+            userId: wallet.user_id,
+            balance: parseFloat(wallet.balance),
+            totalInvested: parseFloat(wallet.total_invested || 0),
+            totalCurrentValue: parseFloat(wallet.total_current_value || 0),
+            totalProfitLoss: parseFloat(wallet.total_profit_loss || 0),
+            totalProfitLossPercent: wallet.total_invested > 0 ? 
+                ((wallet.total_profit_loss / wallet.total_invested) * 100) : 0,
+            totalNetWorth: parseFloat(wallet.balance) + parseFloat(wallet.total_current_value || 0),
+            createdAt: wallet.created_at,
+            updatedAt: wallet.updated_at
         };
     } catch (error) {
         return {
@@ -33,11 +77,7 @@ async function getUserWallet(userId) {
 }
 
 /**
- * Add money to user wallet (Deposit)
- * @param {number} userId - User ID
- * @param {number} amount - Amount to add
- * @param {string} description - Transaction description
- * @returns {Object} Result of the operation
+ * Add money to user wallet (FLATTENED)
  */
 async function addUserBalance(userId, amount, description = 'Wallet deposit') {
     try {
@@ -53,12 +93,10 @@ async function addUserBalance(userId, amount, description = 'Wallet deposit') {
         return {
             success: true,
             message: `Successfully added ₹${amount} to wallet`,
-            data: {
-                amountAdded: amount,
-                newBalance: parseFloat(newBalance),
-                transactionType: 'DEPOSIT',
-                description: description
-            }
+            amountAdded: amount,
+            newBalance: parseFloat(newBalance),
+            transactionType: 'DEPOSIT',
+            description: description
         };
     } catch (error) {
         return {
@@ -69,11 +107,7 @@ async function addUserBalance(userId, amount, description = 'Wallet deposit') {
 }
 
 /**
- * Remove money from user wallet (Withdrawal)
- * @param {number} userId - User ID
- * @param {number} amount - Amount to remove
- * @param {string} description - Transaction description
- * @returns {Object} Result of the operation
+ * Remove money from user wallet (FLATTENED)
  */
 async function removeUserBalance(userId, amount, description = 'Wallet withdrawal') {
     try {
@@ -97,12 +131,10 @@ async function removeUserBalance(userId, amount, description = 'Wallet withdrawa
         return {
             success: true,
             message: `Successfully withdrew ₹${amount} from wallet`,
-            data: {
-                amountWithdrawn: amount,
-                newBalance: parseFloat(newBalance),
-                transactionType: 'WITHDRAWAL',
-                description: description
-            }
+            amountWithdrawn: amount,
+            newBalance: parseFloat(newBalance),
+            transactionType: 'WITHDRAWAL',
+            description: description
         };
     } catch (error) {
         return {
@@ -113,12 +145,7 @@ async function removeUserBalance(userId, amount, description = 'Wallet withdrawa
 }
 
 /**
- * Buy stocks for a user
- * @param {number} userId - User ID
- * @param {string} symbol - Stock symbol (e.g., 'TSLA', 'RELIANCE.NS')
- * @param {number} quantity - Number of shares to buy
- * @param {number} pricePerShare - Price per share (optional, will fetch current price if not provided)
- * @returns {Object} Result of the stock purchase
+ * Buy stocks for a user (FLATTENED)
  */
 async function buyStock(userId, symbol, quantity, pricePerShare = null) {
     try {
@@ -165,19 +192,20 @@ async function buyStock(userId, symbol, quantity, pricePerShare = null) {
         // Execute the stock purchase
         const result = await userDb.buyStock(userId, symbol, companyName, quantity, stockPrice);
         
+        // Update wallet totals
+        await updateWalletTotals(userId);
+        
         return {
             success: true,
             message: result.message,
-            data: {
-                transactionId: result.transactionId,
-                symbol: symbol,
-                companyName: companyName,
-                quantity: quantity,
-                pricePerShare: stockPrice,
-                totalCost: totalCost,
-                transactionType: 'BUY',
-                timestamp: new Date().toISOString()
-            }
+            transactionId: result.transactionId,
+            symbol: symbol,
+            companyName: companyName,
+            quantity: quantity,
+            pricePerShare: stockPrice,
+            totalCost: totalCost,
+            transactionType: 'BUY',
+            timestamp: new Date().toISOString()
         };
     } catch (error) {
         return {
@@ -188,12 +216,7 @@ async function buyStock(userId, symbol, quantity, pricePerShare = null) {
 }
 
 /**
- * Sell stocks for a user
- * @param {number} userId - User ID
- * @param {string} symbol - Stock symbol
- * @param {number} quantity - Number of shares to sell
- * @param {number} pricePerShare - Price per share (optional, will fetch current price if not provided)
- * @returns {Object} Result of the stock sale
+ * Sell stocks for a user (FLATTENED)
  */
 async function sellStock(userId, symbol, quantity, pricePerShare = null) {
     try {
@@ -242,18 +265,19 @@ async function sellStock(userId, symbol, quantity, pricePerShare = null) {
         // Execute the stock sale
         const result = await userDb.sellStock(userId, symbol, quantity, stockPrice);
         
+        // Update wallet totals
+        await updateWalletTotals(userId);
+        
         return {
             success: true,
             message: result.message,
-            data: {
-                transactionId: result.transactionId,
-                symbol: symbol,
-                quantity: quantity,
-                pricePerShare: stockPrice,
-                totalValue: totalValue,
-                transactionType: 'SELL',
-                timestamp: new Date().toISOString()
-            }
+            transactionId: result.transactionId,
+            symbol: symbol,
+            quantity: quantity,
+            pricePerShare: stockPrice,
+            totalValue: totalValue,
+            transactionType: 'SELL',
+            timestamp: new Date().toISOString()
         };
     } catch (error) {
         return {
@@ -264,10 +288,7 @@ async function sellStock(userId, symbol, quantity, pricePerShare = null) {
 }
 
 /**
- * Get user's portfolio with current prices
- * @param {number} userId - User ID
- * @param {boolean} updatePrices - Whether to fetch and update current prices
- * @returns {Object} User's portfolio
+ * Get user's portfolio with current prices (FLATTENED)
  */
 async function getUserPortfolio(userId, updatePrices = true) {
     try {
@@ -276,14 +297,12 @@ async function getUserPortfolio(userId, updatePrices = true) {
         if (portfolio.length === 0) {
             return {
                 success: true,
-                data: {
-                    totalHoldings: 0,
-                    totalInvested: 0,
-                    totalCurrentValue: 0,
-                    totalPnL: 0,
-                    totalPnLPercent: 0,
-                    holdings: []
-                }
+                totalHoldings: 0,
+                totalInvested: 0,
+                totalCurrentValue: 0,
+                totalPnL: 0,
+                totalPnLPercent: 0,
+                holdings: []
             };
         }
 
@@ -309,6 +328,9 @@ async function getUserPortfolio(userId, updatePrices = true) {
             
             // Get updated portfolio
             holdings = await userDb.getPortfolio(userId);
+            
+            // Update wallet totals after price updates
+            await updateWalletTotals(userId);
         }
 
         // Calculate totals
@@ -319,40 +341,34 @@ async function getUserPortfolio(userId, updatePrices = true) {
 
         return {
             success: true,
-            data: {
-                totalHoldings: holdings.length,
-                totalInvested: parseFloat(totalInvested.toFixed(2)),
-                totalCurrentValue: parseFloat(totalCurrentValue.toFixed(2)),
-                totalPnL: parseFloat(totalPnL.toFixed(2)),
-                totalPnLPercent: parseFloat(totalPnLPercent.toFixed(2)),
-                holdings: holdings.map(h => {
-                    const quantity = parseInt(h.quantity) || 0;
-                    const avgPrice = parseFloat(h.average_price) || 0;
-                    const currentPrice = parseFloat(h.current_price || h.average_price) || 0;
-                    const investedAmount = parseFloat(h.invested_amount) || 0;
-                    const currentValue = quantity * currentPrice;
-                    const pnl = currentValue - investedAmount;
-                    const pnlPercent = investedAmount > 0 ? ((pnl / investedAmount) * 100) : 0;
+            totalHoldings: holdings.length,
+            totalInvested: parseFloat(totalInvested.toFixed(2)),
+            totalCurrentValue: parseFloat(totalCurrentValue.toFixed(2)),
+            totalPnL: parseFloat(totalPnL.toFixed(2)),
+            totalPnLPercent: parseFloat(totalPnLPercent.toFixed(2)),
+            holdings: holdings.map(h => {
+                const quantity = parseInt(h.quantity) || 0;
+                const avgPrice = parseFloat(h.average_price) || 0;
+                const currentPrice = parseFloat(h.current_price || h.average_price) || 0;
+                const investedAmount = parseFloat(h.invested_amount) || 0;
+                const currentValue = quantity * currentPrice;
+                const pnl = currentValue - investedAmount;
+                const pnlPercent = investedAmount > 0 ? ((pnl / investedAmount) * 100) : 0;
 
-                    return {
-                        symbol: h.symbol,
-                        companyName: h.company_name,
-                        quantity: quantity,
-                        avgPrice: avgPrice,
-                        averagePrice: avgPrice, // Keep for backward compatibility
-                        currentPrice: currentPrice,
-                        investedAmount: investedAmount,
-                        totalCost: investedAmount, // Add this for frontend compatibility
-                        currentValue: currentValue,
-                        pnl: parseFloat(pnl.toFixed(2)),
-                        pnlPercent: parseFloat(pnlPercent.toFixed(2)),
-                        profitLoss: parseFloat(pnl.toFixed(2)), // Keep for backward compatibility
-                        profitLossPercent: parseFloat(pnlPercent.toFixed(2)), // Keep for backward compatibility
-                        firstBuyDate: h.first_buy_date,
-                        lastUpdated: h.last_updated
-                    };
-                })
-            }
+                return {
+                    symbol: h.symbol,
+                    companyName: h.company_name,
+                    quantity: quantity,
+                    avgPrice: avgPrice,
+                    currentPrice: currentPrice,
+                    investedAmount: investedAmount,
+                    currentValue: currentValue,
+                    pnl: parseFloat(pnl.toFixed(2)),
+                    pnlPercent: parseFloat(pnlPercent.toFixed(2)),
+                    firstBuyDate: h.first_buy_date,
+                    lastUpdated: h.last_updated
+                };
+            })
         };
     } catch (error) {
         return {
@@ -363,11 +379,7 @@ async function getUserPortfolio(userId, updatePrices = true) {
 }
 
 /**
- * Get user's transaction history
- * @param {number} userId - User ID
- * @param {number} limit - Number of transactions to fetch
- * @param {number} offset - Offset for pagination
- * @returns {Object} Transaction history
+ * Get user's transaction history (FLATTENED)
  */
 async function getTransactionHistory(userId, limit = 50, offset = 0) {
     try {
@@ -375,19 +387,19 @@ async function getTransactionHistory(userId, limit = 50, offset = 0) {
         
         return {
             success: true,
-            data: {
-                totalTransactions: transactions.length,
-                transactions: transactions.map(t => ({
-                    id: t.id,
-                    symbol: t.symbol,
-                    companyName: t.company_name,
-                    transactionType: t.transaction_type,
-                    quantity: t.quantity,
-                    price: parseFloat(t.price),
-                    totalAmount: parseFloat(t.total_amount),
-                    transactionDate: t.transaction_date
-                }))
-            }
+            totalTransactions: transactions.length,
+            limit: limit,
+            offset: offset,
+            transactions: transactions.map(t => ({
+                id: t.id,
+                symbol: t.symbol,
+                companyName: t.company_name,
+                transactionType: t.transaction_type,
+                quantity: t.quantity,
+                price: parseFloat(t.price),
+                totalAmount: parseFloat(t.total_amount),
+                transactionDate: t.transaction_date
+            }))
         };
     } catch (error) {
         return {
@@ -398,11 +410,7 @@ async function getTransactionHistory(userId, limit = 50, offset = 0) {
 }
 
 /**
- * Get user's wallet transaction history
- * @param {number} userId - User ID
- * @param {number} limit - Number of transactions to fetch
- * @param {number} offset - Offset for pagination
- * @returns {Object} Wallet transaction history
+ * Get user's wallet transaction history (FLATTENED)
  */
 async function getWalletTransactionHistory(userId, limit = 50, offset = 0) {
     try {
@@ -410,18 +418,18 @@ async function getWalletTransactionHistory(userId, limit = 50, offset = 0) {
         
         return {
             success: true,
-            data: {
-                totalTransactions: transactions.length,
-                transactions: transactions.map(t => ({
-                    id: t.id,
-                    transactionType: t.transaction_type,
-                    amount: parseFloat(t.amount),
-                    balanceAfter: parseFloat(t.balance_after),
-                    description: t.description,
-                    referenceId: t.reference_id,
-                    createdAt: t.created_at
-                }))
-            }
+            totalTransactions: transactions.length,
+            limit: limit,
+            offset: offset,
+            transactions: transactions.map(t => ({
+                id: t.id,
+                transactionType: t.transaction_type,
+                amount: parseFloat(t.amount),
+                balanceAfter: parseFloat(t.balance_after),
+                description: t.description,
+                referenceId: t.reference_id,
+                createdAt: t.created_at
+            }))
         };
     } catch (error) {
         return {
@@ -432,43 +440,53 @@ async function getWalletTransactionHistory(userId, limit = 50, offset = 0) {
 }
 
 /**
- * Get user's complete financial summary
- * @param {number} userId - User ID
- * @returns {Object} Complete financial summary
+ * Get user's complete financial summary (FLATTENED)
  */
 async function getUserFinancialSummary(userId) {
     try {
-        const [walletResult, portfolioResult, stockTransactions, walletTransactions] = await Promise.all([
+        const [wallet, portfolio, stockTransactions, walletTransactions] = await Promise.all([
             getUserWallet(userId),
             getUserPortfolio(userId, true),
             getTransactionHistory(userId, 10),
             getWalletTransactionHistory(userId, 10)
         ]);
 
-        if (!walletResult.success) {
-            throw new Error(walletResult.error);
+        if (!wallet.success) {
+            throw new Error(wallet.error);
         }
 
-        if (!portfolioResult.success) {
-            throw new Error(portfolioResult.error);
+        if (!portfolio.success) {
+            throw new Error(portfolio.error);
         }
 
         return {
             success: true,
-            data: {
-                wallet: walletResult.data,
-                portfolio: portfolioResult.data,
-                recentStockTransactions: stockTransactions.success ? stockTransactions.data.transactions : [],
-                recentWalletTransactions: walletTransactions.success ? walletTransactions.data.transactions : [],
-                summary: {
-                    totalNetWorth: walletResult.data.balance + portfolioResult.data.totalCurrentValue,
-                    liquidCash: walletResult.data.balance,
-                    investedAmount: portfolioResult.data.totalInvested,
-                    portfolioValue: portfolioResult.data.totalCurrentValue,
-                    totalProfitLoss: portfolioResult.data.totalProfitLoss,
-                    totalProfitLossPercent: portfolioResult.data.totalProfitLossPercent
-                }
-            }
+            // Wallet info
+            userId: wallet.userId,
+            balance: wallet.balance,
+            totalInvested: wallet.totalInvested,
+            totalCurrentValue: wallet.totalCurrentValue,
+            totalProfitLoss: wallet.totalProfitLoss,
+            totalProfitLossPercent: wallet.totalProfitLossPercent,
+            totalNetWorth: wallet.totalNetWorth,
+            
+            // Portfolio summary
+            totalHoldings: portfolio.totalHoldings,
+            portfolioInvested: portfolio.totalInvested,
+            portfolioCurrentValue: portfolio.totalCurrentValue,
+            portfolioPnL: portfolio.totalPnL,
+            portfolioPnLPercent: portfolio.totalPnLPercent,
+            
+            // Holdings
+            holdings: portfolio.holdings,
+            
+            // Recent transactions
+            recentStockTransactions: stockTransactions.success ? stockTransactions.transactions : [],
+            recentWalletTransactions: walletTransactions.success ? walletTransactions.transactions : [],
+            
+            // Timestamps
+            walletUpdatedAt: wallet.updatedAt,
+            timestamp: new Date().toISOString()
         };
     } catch (error) {
         return {
@@ -479,12 +497,7 @@ async function getUserFinancialSummary(userId) {
 }
 
 /**
- * Check if user can afford a stock purchase
- * @param {number} userId - User ID
- * @param {string} symbol - Stock symbol
- * @param {number} quantity - Number of shares
- * @param {number} pricePerShare - Price per share (optional)
- * @returns {Object} Affordability check result
+ * Check if user can afford a stock purchase (FLATTENED)
  */
 async function canAffordStock(userId, symbol, quantity, pricePerShare = null) {
     try {
@@ -500,15 +513,13 @@ async function canAffordStock(userId, symbol, quantity, pricePerShare = null) {
         
         return {
             success: true,
-            data: {
-                canAfford: wallet.balance >= totalCost,
-                requiredAmount: totalCost,
-                availableBalance: parseFloat(wallet.balance),
-                shortfall: wallet.balance < totalCost ? totalCost - wallet.balance : 0,
-                stockPrice: stockPrice,
-                quantity: quantity,
-                symbol: symbol
-            }
+            canAfford: wallet.balance >= totalCost,
+            requiredAmount: totalCost,
+            availableBalance: parseFloat(wallet.balance),
+            shortfall: wallet.balance < totalCost ? totalCost - wallet.balance : 0,
+            stockPrice: stockPrice,
+            quantity: quantity,
+            symbol: symbol
         };
     } catch (error) {
         return {
@@ -519,7 +530,7 @@ async function canAffordStock(userId, symbol, quantity, pricePerShare = null) {
 }
 
 /**
- * Add stock to user's watchlist
+ * Add stock to user's watchlist (FLATTENED)
  */
 async function addToWatchlist(userId, symbol) {
     try {
@@ -550,7 +561,7 @@ async function addToWatchlist(userId, symbol) {
 }
 
 /**
- * Remove stock from user's watchlist
+ * Remove stock from user's watchlist (FLATTENED)
  */
 async function removeFromWatchlist(userId, symbol) {
     try {
@@ -571,7 +582,7 @@ async function removeFromWatchlist(userId, symbol) {
 }
 
 /**
- * Get user's watchlist with current prices (flattened response)
+ * Get user's watchlist with current prices (FLATTENED)
  */
 async function getUserWatchlist(userId, includePrices = true) {
     try {
@@ -648,7 +659,7 @@ async function getUserWatchlist(userId, includePrices = true) {
 }
 
 /**
- * Check if stock is in user's watchlist (flattened response)
+ * Check if stock is in user's watchlist (FLATTENED)
  */
 async function isStockInWatchlist(userId, symbol) {
     try {
@@ -668,7 +679,7 @@ async function isStockInWatchlist(userId, symbol) {
 }
 
 /**
- * Check if user owns a specific stock and how much (flattened response)
+ * Check if user owns a specific stock and how much (FLATTENED)
  */
 async function getUserStockHolding(userId, symbol) {
     try {
@@ -705,7 +716,11 @@ async function getUserStockHolding(userId, symbol) {
     }
 }
 
-// Core wallet functions
+// Database cleanup function
+async function closeUserDatabase() {
+    await userDb.close();
+}
+
 module.exports = {
     getUserWallet,
     addUserBalance,
@@ -722,13 +737,13 @@ module.exports = {
     getWalletTransactionHistory,
     getUserFinancialSummary,
     
-    // Direct database access (if needed)
-    userDb,
-
     // Watchlist functions
     addToWatchlist,
     removeFromWatchlist,
     getUserWatchlist,
     isStockInWatchlist,
-    getUserStockHolding
+    getUserStockHolding,
+    
+    // Cleanup
+    closeUserDatabase
 };

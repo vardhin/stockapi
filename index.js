@@ -357,11 +357,7 @@ app.get('/api/user/wallet', authenticate(), asyncHandler(async (req, res) => {
     const result = await getUserWallet(req.user.id);
     
     if (result.success) {
-        res.json({
-            success: true,
-            data: result.data,
-            timestamp: new Date().toISOString()
-        });
+        res.json(result); // Already flattened
     } else {
         res.status(400).json({
             success: false,
@@ -387,9 +383,7 @@ app.post('/api/user/wallet/deposit', authenticate(), asyncHandler(async (req, re
     
     if (result.success) {
         res.json({
-            success: true,
-            message: result.message,
-            data: result.data,
+            ...result,
             timestamp: new Date().toISOString()
         });
     } else {
@@ -417,9 +411,7 @@ app.post('/api/user/wallet/withdraw', authenticate(), asyncHandler(async (req, r
     
     if (result.success) {
         res.json({
-            success: true,
-            message: result.message,
-            data: result.data,
+            ...result,
             timestamp: new Date().toISOString()
         });
     } else {
@@ -454,12 +446,7 @@ app.post('/api/user/stocks/buy', authenticate(), asyncHandler(async (req, res) =
     const result = await buyStock(req.user.id, symbol.toUpperCase(), parseInt(quantity), pricePerShare ? parseFloat(pricePerShare) : null);
     
     if (result.success) {
-        res.json({
-            success: true,
-            message: result.message,
-            data: result.data,
-            timestamp: new Date().toISOString()
-        });
+        res.json(result); // Already flattened
     } else {
         res.status(400).json({
             success: false,
@@ -492,12 +479,7 @@ app.post('/api/user/stocks/sell', authenticate(), asyncHandler(async (req, res) 
     const result = await sellStock(req.user.id, symbol.toUpperCase(), parseInt(quantity), pricePerShare ? parseFloat(pricePerShare) : null);
     
     if (result.success) {
-        res.json({
-            success: true,
-            message: result.message,
-            data: result.data,
-            timestamp: new Date().toISOString()
-        });
+        res.json(result); // Already flattened
     } else {
         res.status(400).json({
             success: false,
@@ -516,8 +498,7 @@ app.get('/api/user/portfolio', authenticate(), asyncHandler(async (req, res) => 
     
     if (result.success) {
         res.json({
-            success: true,
-            data: result.data,
+            ...result,
             timestamp: new Date().toISOString()
         });
     } else {
@@ -537,12 +518,7 @@ app.get('/api/user/transactions', authenticate(), asyncHandler(async (req, res) 
     
     if (result.success) {
         res.json({
-            success: true,
-            data: result.data,
-            pagination: {
-                limit: parseInt(limit),
-                offset: parseInt(offset)
-            },
+            ...result,
             timestamp: new Date().toISOString()
         });
     } else {
@@ -562,12 +538,7 @@ app.get('/api/user/wallet/transactions', authenticate(), asyncHandler(async (req
     
     if (result.success) {
         res.json({
-            success: true,
-            data: result.data,
-            pagination: {
-                limit: parseInt(limit),
-                offset: parseInt(offset)
-            },
+            ...result,
             timestamp: new Date().toISOString()
         });
     } else {
@@ -584,11 +555,7 @@ app.get('/api/user/summary', authenticate(), asyncHandler(async (req, res) => {
     const result = await getUserFinancialSummary(req.user.id);
     
     if (result.success) {
-        res.json({
-            success: true,
-            data: result.data,
-            timestamp: new Date().toISOString()
-        });
+        res.json(result); // Already flattened
     } else {
         res.status(400).json({
             success: false,
@@ -622,8 +589,7 @@ app.post('/api/user/stocks/check-affordability', authenticate(), asyncHandler(as
     
     if (result.success) {
         res.json({
-            success: true,
-            data: result.data,
+            ...result,
             timestamp: new Date().toISOString()
         });
     } else {
