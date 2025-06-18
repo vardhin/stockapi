@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
-const rateLimit = require('express-rate-limit');
+// Remove rate limiting imports
+// const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const {
     // Core stock data functions
@@ -27,6 +28,13 @@ const {
     
     // Popular stocks
     getPopularStocks,
+    
+    // Trending stocks functions
+    scrapeTrendingStocks,
+    storeTrendingStocks,
+    getTrendingStocks,
+    updateTrendingStocks,
+    shouldUpdateTrendingStocks, // Add this import
     
     // Cache management
     cleanExpiredCache,
@@ -75,36 +83,9 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Rate limiting with different limits for auth endpoints
-const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // limit each IP to 100 requests per windowMs
-    message: {
-        error: 'Too many requests from this IP, please try again later.',
-        retryAfter: '15 minutes'
-    },
-    // Skip validation for local development
-    validate: {
-        xForwardedForHeader: false
-    }
-});
-
-// Stricter rate limiting for auth endpoints
-const authLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 10, // limit each IP to 10 auth requests per windowMs
-    message: {
-        error: 'Too many authentication attempts from this IP, please try again later.',
-        retryAfter: '15 minutes'
-    },
-    // Skip validation for local development
-    validate: {
-        xForwardedForHeader: false
-    }
-});
-
-app.use('/api/', limiter);
-app.use('/api/auth/', authLimiter);
+// Remove all rate limiting middleware
+// app.use('/api/', limiter);
+// app.use('/api/auth/', authLimiter);
 
 // Helper function to handle async routes
 const asyncHandler = (fn) => (req, res, next) => {
@@ -115,7 +96,7 @@ const asyncHandler = (fn) => (req, res, next) => {
 app.get('/', (req, res) => {
     res.json({
         message: 'Stock API Server with Authentication & Trading',
-        version: '1.2.0',
+        version: '1.3.0',
         endpoints: {
             // Authentication endpoints
             'POST /api/auth/signup': 'User registration (with ₹1,000,000 starting balance)',
@@ -155,6 +136,12 @@ app.get('/', (req, res) => {
             'GET /api/search/online': 'Search stocks online only',
             'GET /api/search-quote': 'Search and get quote in one call',
             'GET /api/popular': 'Get popular stocks',
+            
+            // Trending Stocks endpoints
+            'GET /api/trending': 'Get trending stocks (with optional ?update=true to refresh)',
+            'POST /api/trending/update': 'Update trending stocks by scraping (requires auth)',
+            'GET /api/trending/scrape': 'Scrape trending stocks without storing (requires auth)',
+            
             'DELETE /api/cache/clean': 'Clean expired cache (requires auth)',
             'GET /api/health': 'Health check'
         },
@@ -323,11 +310,9 @@ app.post('/api/auth/signin-simple', asyncHandler(async (req, res) => {
     try {
         const result = await signin({ email, password }, req);
         
-        // Get user data separately since it's not included in signin result
-        const { AuthManager } = require('./auth');
-        const authManager = new AuthManager();
-        await authManager.db.initDb(); // Ensure database is ready
-        const user = await authManager.db.getUserByEmail(email);
+        // Extract user info from the JWT token instead of making DB query
+        const jwt = require('jsonwebtoken');
+        const decoded = jwt.decode(result.access_token);
         
         // Return a flatter structure for easier parsing
         res.json({
@@ -335,12 +320,13 @@ app.post('/api/auth/signin-simple', asyncHandler(async (req, res) => {
             message: 'User logged in successfully',
             access_token: result.access_token,
             refresh_token: result.refresh_token,
-            user_id: user.id.toString(),
-            user_email: user.email,
-            user_fullName: user.full_name,
+            user_id: decoded.sub,
+            user_email: decoded.email,
+            user_fullName: decoded.fullName || 'User',
             timestamp: new Date().toISOString()
         });
     } catch (error) {
+        console.error('Signin error:', error.message);
         res.status(400).json({
             success: false,
             message: error.message
@@ -903,6 +889,85 @@ app.get('/api/popular', asyncHandler(async (req, res) => {
             category,
             count: data.length,
             stocks: data
+        },
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// ================================
+// TRENDING STOCKS ENDPOINTS
+// ================================
+
+// Get trending stocks
+app.get('/api/trending', asyncHandler(async (req, res) => {
+    const { limit = 30, update = 'false', force = 'false' } = req.query;
+    
+    // Check if we should update (only if explicitly requested or data is stale)
+    const shouldUpdate = update === 'true' || force === 'true' || await shouldUpdateTrendingStocks();
+    
+    // If update is requested and needed, scrape fresh data
+    if (shouldUpdate && (update === 'true' || force === 'true')) {
+        try {
+            console.log('🔄 Updating trending stocks due to request...');
+            await updateTrendingStocks();
+        } catch (error) {
+            console.error('❌ Failed to update trending stocks:', error.message);
+            // Continue with existing data
+        }
+    }
+    
+    // Get the data (will use cache if recent)
+    const result = await getTrendingStocks(parseInt(limit), true);
+    
+    // Add cache headers
+    const cacheAge = result.cached ? 3600 : 0; // 1 hour if cached, 0 if stale
+    res.set('Cache-Control', `public, max-age=${cacheAge}`);
+    
+    // Simplified flat structure
+    res.json({
+        success: true,
+        count: result.count,
+        source: result.source,
+        lastUpdated: result.lastUpdated,
+        cached: result.cached || false,
+        stocks: result.data.map(stock => ({
+            symbol: stock.symbol,
+            name: stock.companyName,
+            price: stock.lastPrice,
+            change: stock.changeAmount,
+            changePercent: stock.changePercent,
+            volume: stock.volume,
+            high: stock.dayHigh,
+            low: stock.dayLow,
+            rank: stock.trendRank,
+            positive: stock.isPositiveChange
+        })),
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// Update trending stocks (scrape fresh data) - requires authentication
+app.post('/api/trending/update', authenticate(), asyncHandler(async (req, res) => {
+    const result = await updateTrendingStocks();
+    
+    res.json({
+        success: true,
+        message: 'Trending stocks updated successfully',
+        data: result,
+        timestamp: new Date().toISOString()
+    });
+}));
+
+// Scrape trending stocks without storing (for testing)
+app.get('/api/trending/scrape', authenticate(), asyncHandler(async (req, res) => {
+    const scrapedData = await scrapeTrendingStocks();
+    
+    res.json({
+        success: true,
+        message: 'Trending stocks scraped successfully',
+        data: {
+            count: scrapedData.length,
+            stocks: scrapedData
         },
         timestamp: new Date().toISOString()
     });

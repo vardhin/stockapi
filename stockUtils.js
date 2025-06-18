@@ -1,5 +1,6 @@
 const axios = require('axios');
 const StockDatabase = require('./database/db');
+const cheerio = require('cheerio');
 
 // Initialize database
 const db = new StockDatabase();
@@ -605,6 +606,599 @@ async function autoCleanup() {
     }
 }
 
+// Function to store trending stocks in database
+async function storeTrendingStocks(trendingStocks) {
+    try {
+        // Check if trending stock methods exist, if not, just return success
+        if (typeof db.clearTrendingStocks !== 'function') {
+            console.log('⚠️ Trending stocks database methods not available, using in-memory storage');
+            // Store in memory as fallback
+            global.cachedTrendingStocks = {
+                data: trendingStocks,
+                timestamp: new Date().toISOString(),
+                count: trendingStocks.length
+            };
+            return {
+                success: true,
+                count: trendingStocks.length,
+                timestamp: new Date().toISOString(),
+                storage: 'memory'
+            };
+        }
+        
+        // Clear existing trending stocks
+        await db.clearTrendingStocks();
+        
+        // Store new trending stocks
+        let storedCount = 0;
+        for (const stock of trendingStocks) {
+            try {
+                await db.storeTrendingStock(stock);
+                storedCount++;
+            } catch (error) {
+                console.error(`Error storing trending stock ${stock.symbol}:`, error.message);
+            }
+        }
+        
+        console.log(`💾 Stored ${storedCount} trending stocks in database`);
+        return {
+            success: true,
+            count: storedCount,
+            timestamp: new Date().toISOString(),
+            storage: 'database'
+        };
+    } catch (error) {
+        console.error('Error storing trending stocks:', error);
+        // Fallback to memory storage
+        global.cachedTrendingStocks = {
+            data: trendingStocks,
+            timestamp: new Date().toISOString(),
+            count: trendingStocks.length
+        };
+        return {
+            success: true,
+            count: trendingStocks.length,
+            timestamp: new Date().toISOString(),
+            storage: 'memory-fallback'
+        };
+    }
+}
+
+// Function to get trending stocks from database
+async function getTrendingStocks(limit = 30) {
+    try {
+        // Check if trending stock methods exist
+        if (typeof db.getTrendingStocks !== 'function') {
+            console.log('⚠️ Trending stocks database methods not available, checking memory...');
+            
+            // Check memory cache first
+            if (global.cachedTrendingStocks) {
+                const cacheAge = new Date() - new Date(global.cachedTrendingStocks.timestamp);
+                const cacheHours = cacheAge / (1000 * 60 * 60);
+                
+                // Use cache if less than 2 hours old
+                if (cacheHours < 2) {
+                    console.log(`📊 Using memory cached trending stocks (${cacheHours.toFixed(1)}h old)`);
+                    return {
+                        success: true,
+                        count: Math.min(global.cachedTrendingStocks.data.length, limit),
+                        source: 'Memory Cache',
+                        lastUpdated: global.cachedTrendingStocks.timestamp,
+                        data: global.cachedTrendingStocks.data.slice(0, limit)
+                    };
+                }
+            }
+            
+            // Generate fallback and store in memory
+            console.log('🔄 Generating fresh fallback trending stocks...');
+            const fallbackStocks = await getFallbackTrendingStocks();
+            
+            global.cachedTrendingStocks = {
+                data: fallbackStocks,
+                timestamp: new Date().toISOString(),
+                count: fallbackStocks.length
+            };
+            
+            return {
+                success: true,
+                count: Math.min(fallbackStocks.length, limit),
+                source: 'Generated Fallback',
+                lastUpdated: new Date().toISOString(),
+                data: fallbackStocks.slice(0, limit)
+            };
+        }
+        
+        const trendingStocks = await db.getTrendingStocks(limit);
+        
+        if (trendingStocks.length === 0) {
+            console.log('No trending stocks found in database, generating fallback...');
+            const fallbackStocks = await getFallbackTrendingStocks();
+            
+            // Store the fallback stocks for future use
+            await storeTrendingStocks(fallbackStocks);
+            
+            return {
+                success: true,
+                count: Math.min(fallbackStocks.length, limit),
+                source: 'Fallback Generated',
+                lastUpdated: new Date().toISOString(),
+                data: fallbackStocks.slice(0, limit)
+            };
+        }
+        
+        return {
+            success: true,
+            count: trendingStocks.length,
+            source: 'Database',
+            lastUpdated: trendingStocks[0]?.lastUpdated || new Date().toISOString(),
+            data: trendingStocks
+        };
+    } catch (error) {
+        console.error('Error getting trending stocks:', error);
+        
+        // Fallback to memory cache if available
+        if (global.cachedTrendingStocks) {
+            console.log('📊 Using memory cache due to database error...');
+            return {
+                success: true,
+                count: Math.min(global.cachedTrendingStocks.data.length, limit),
+                source: 'Memory Cache (Error Fallback)',
+                lastUpdated: global.cachedTrendingStocks.timestamp,
+                data: global.cachedTrendingStocks.data.slice(0, limit)
+            };
+        }
+        
+        // Generate fresh fallback
+        const fallbackStocks = await getFallbackTrendingStocks();
+        
+        global.cachedTrendingStocks = {
+            data: fallbackStocks,
+            timestamp: new Date().toISOString(),
+            count: fallbackStocks.length
+        };
+        
+        return {
+            success: true,
+            count: Math.min(fallbackStocks.length, limit),
+            source: 'Generated Fallback (Error Recovery)',
+            lastUpdated: new Date().toISOString(),
+            data: fallbackStocks.slice(0, limit)
+        };
+    }
+}
+
+// Function to check if trending stocks should be updated
+async function shouldUpdateTrendingStocks() {
+    try {
+        // Check if method exists
+        if (typeof db.getLastTrendingStocksUpdate !== 'function') {
+            // Check memory cache age
+            if (global.cachedTrendingStocks) {
+                const cacheAge = new Date() - new Date(global.cachedTrendingStocks.timestamp);
+                const cacheHours = cacheAge / (1000 * 60 * 60);
+                const shouldUpdate = cacheHours > 2; // Update if more than 2 hours old
+                
+                console.log(`Memory cache age: ${cacheHours.toFixed(2)} hours, should update: ${shouldUpdate}`);
+                return shouldUpdate;
+            }
+            
+            console.log('No memory cache found, should update: true');
+            return true;
+        }
+        
+        const lastUpdate = await db.getLastTrendingStocksUpdate();
+        
+        if (!lastUpdate) {
+            console.log('No previous trending stocks update found');
+            return true;
+        }
+        
+        const now = new Date();
+        const lastUpdateTime = new Date(lastUpdate);
+        const timeDifference = now - lastUpdateTime;
+        const hoursDifference = timeDifference / (1000 * 60 * 60);
+        
+        // Update if more than 2 hours have passed
+        const shouldUpdate = hoursDifference > 2;
+        
+        console.log(`Last trending stocks update: ${lastUpdateTime.toISOString()}`);
+        console.log(`Hours since last update: ${hoursDifference.toFixed(2)}`);
+        console.log(`Should update: ${shouldUpdate}`);
+        
+        return shouldUpdate;
+    } catch (error) {
+        console.error('Error checking trending stocks update status:', error);
+        return true; // Default to update if there's an error
+    }
+}
+
+// Update the main scraping function call to always return data
+async function updateTrendingStocks() {
+    try {
+        console.log('🔄 Updating trending stocks...');
+        
+        // Scrape trending stocks (with fallback built-in)
+        const scrapedStocks = await scrapeTrendingStocks();
+        
+        if (scrapedStocks.length === 0) {
+            // This should not happen with fallback, but just in case
+            throw new Error('No trending stocks found even with fallback');
+        }
+        
+        // Store in database
+        const result = await storeTrendingStocks(scrapedStocks);
+        
+        console.log(`✅ Successfully updated ${result.count} trending stocks`);
+        return result;
+        
+    } catch (error) {
+        console.error('❌ Error updating trending stocks:', error.message);
+        throw error;
+    }
+}
+
+// Enhanced scraping function with fallback
+async function scrapeTrendingStocks() {
+    console.log('🔍 Attempting to scrape trending stocks from multiple sources...');
+    
+    // Try multiple sources with different strategies
+    const sources = [
+        {
+            name: 'Yahoo Finance Most Active (US)',
+            url: 'https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?formatted=true&lang=en-US&region=US&scrIds=most_actives',
+            parser: parseYahooMostActiveUS
+        },
+        {
+            name: 'Yahoo Finance Most Active (India)',
+            url: 'https://query1.finance.yahoo.com/v1/finance/screener?crumb=&lang=en-US&region=US&formatted=true&corsDomain=finance.yahoo.com',
+            parser: parseYahooMostActiveIndia
+        },
+        {
+            name: 'NSE Most Active (Alternative)',
+            url: 'https://www.nseindia.com/api/live-analysis-most-active-securities',
+            parser: parseNSEMostActiveAlt
+        }
+    ];
+
+    for (const source of sources) {
+        try {
+            console.log(`🔍 Trying ${source.name}...`);
+            const stocks = await source.parser(source.url);
+            
+            if (stocks.length > 0) {
+                console.log(`✅ Successfully got ${stocks.length} trending stocks from ${source.name}`);
+                return stocks;
+            }
+        } catch (error) {
+            console.log(`❌ ${source.name} failed: ${error.message}`);
+            continue;
+        }
+    }
+    
+    console.log('⚠️ All scraping sources failed, using fallback trending stocks...');
+    return await getFallbackTrendingStocks();
+}
+
+// New parser for Yahoo Finance US (includes global stocks)
+async function parseYahooMostActiveUS(url) {
+    const response = await axiosInstance.get(url, {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Referer': 'https://finance.yahoo.com/',
+            'Origin': 'https://finance.yahoo.com'
+        },
+        timeout: 10000
+    });
+
+    const data = response.data;
+    const stocks = [];
+    let rank = 1;
+
+    if (data.finance?.result?.[0]?.quotes) {
+        for (const quote of data.finance.result[0].quotes) {
+            // Focus on Indian stocks (.NS suffix) and popular US stocks
+            if (quote.symbol?.endsWith('.NS') || 
+                ['AAPL', 'TSLA', 'GOOGL', 'MSFT', 'AMZN', 'META', 'NVDA'].includes(quote.symbol)) {
+                
+                const changeAmount = quote.regularMarketChange || 0;
+                const changePercent = quote.regularMarketChangePercent || 0;
+                const symbol = quote.symbol.replace('.NS', '');
+                
+                stocks.push({
+                    symbol: symbol,
+                    companyName: quote.shortName || quote.longName || symbol,
+                    lastPrice: quote.regularMarketPrice,
+                    dayHigh: quote.regularMarketDayHigh,
+                    dayLow: quote.regularMarketDayLow,
+                    changeAmount: changeAmount,
+                    changePercent: changePercent,
+                    volume: quote.regularMarketVolume?.toString() || '0',
+                    lastUpdatedTime: new Date().toTimeString().split(' ')[0],
+                    marketStatus: 'open',
+                    trendRank: rank,
+                    isPositiveChange: changeAmount > 0
+                });
+                rank++;
+                
+                if (stocks.length >= 30) break;
+            }
+        }
+    }
+
+    return stocks;
+}
+
+// Alternative parser for Indian stocks
+async function parseYahooMostActiveIndia(url) {
+    // Create a custom request for Indian market data
+    const indianStocksUrl = 'https://query1.finance.yahoo.com/v7/finance/quote?symbols=' + 
+        'RELIANCE.NS,TCS.NS,HDFCBANK.NS,INFY.NS,HINDUNILVR.NS,ICICIBANK.NS,KOTAKBANK.NS,BHARTIARTL.NS,SBIN.NS,LT.NS';
+    
+    const response = await axiosInstance.get(indianStocksUrl, {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Referer': 'https://finance.yahoo.com/'
+        },
+        timeout: 10000
+    });
+
+    const data = response.data;
+    const stocks = [];
+    let rank = 1;
+
+    if (data.quoteResponse?.result) {
+        for (const quote of data.quoteResponse.result) {
+            const changeAmount = quote.regularMarketChange || 0;
+            const changePercent = quote.regularMarketChangePercent || 0;
+            const symbol = quote.symbol.replace('.NS', '');
+            
+            stocks.push({
+                symbol: symbol,
+                companyName: quote.shortName || quote.longName || symbol,
+                lastPrice: quote.regularMarketPrice,
+                dayHigh: quote.regularMarketDayHigh,
+                dayLow: quote.regularMarketDayLow,
+                changeAmount: changeAmount,
+                changePercent: changePercent,
+                volume: quote.regularMarketVolume?.toString() || '0',
+                lastUpdatedTime: new Date().toTimeString().split(' ')[0],
+                marketStatus: 'open',
+                trendRank: rank,
+                isPositiveChange: changeAmount > 0
+            });
+            rank++;
+        }
+    }
+
+    return stocks;
+}
+
+// Alternative NSE parser
+async function parseNSEMostActiveAlt(url) {
+    const response = await axiosInstance.get(url, {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.nseindia.com/',
+            'X-Requested-With': 'XMLHttpRequest'
+        },
+        timeout: 15000
+    });
+
+    const data = response.data;
+    const stocks = [];
+    let rank = 1;
+
+    // Try different data structures that NSE might use
+    const dataArrays = [data.VOLUME, data.data, data.mostActive, data];
+    
+    for (const dataArray of dataArrays) {
+        if (Array.isArray(dataArray) && dataArray.length > 0) {
+            for (const stock of dataArray.slice(0, 30)) {
+                const changeAmount = parseFloat(stock.netPrice || stock.change || stock.changeAmount) || 0;
+                const changePercent = parseFloat(stock.pChange || stock.changePercent || stock.pctChange) || 0;
+                
+                stocks.push({
+                    symbol: stock.symbol || stock.Symbol || stock.scrip,
+                    companyName: stock.companyName || stock.name || stock.symbol,
+                    lastPrice: parseFloat(stock.lastPrice || stock.ltp || stock.price),
+                    dayHigh: parseFloat(stock.dayHigh || stock.high),
+                    dayLow: parseFloat(stock.dayLow || stock.low),
+                    changeAmount: changeAmount,
+                    changePercent: changePercent,
+                    volume: (stock.totalTradedVolume || stock.volume || '0').toString(),
+                    lastUpdatedTime: new Date().toTimeString().split(' ')[0],
+                    marketStatus: 'open',
+                    trendRank: rank,
+                    isPositiveChange: changeAmount > 0
+                });
+                rank++;
+            }
+            break; // Use first successful data array
+        }
+    }
+
+    return stocks;
+}
+
+// Helper function to parse volume (converts "8.64M" to number)
+function parseVolume(volumeStr) {
+    if (!volumeStr) return null;
+    
+    const cleanStr = volumeStr.replace(/,/g, '');
+    const multipliers = {
+        'K': 1000,
+        'M': 1000000,
+        'B': 1000000000
+    };
+    
+    const match = cleanStr.match(/^([\d.]+)([KMB])?$/);
+    if (!match) return null;
+    
+    const number = parseFloat(match[1]);
+    const suffix = match[2];
+    
+    return suffix ? number * multipliers[suffix] : number;
+}
+
+// Helper function to parse price (removes commas)
+function parsePrice(priceStr) {
+    if (!priceStr) return null;
+    return parseFloat(priceStr.replace(/,/g, ''));
+}
+
+// Helper function to parse change amount and percentage
+function parseChange(changeStr) {
+    if (!changeStr) return { amount: null, isPositive: false };
+    
+    const isPositive = changeStr.startsWith('+');
+    const cleanStr = changeStr.replace(/[+\-,]/g, '');
+    const amount = parseFloat(cleanStr);
+    
+    return { amount: isNaN(amount) ? null : amount, isPositive };
+}
+
+// Fallback trending stocks based on popular Indian stocks
+async function getFallbackTrendingStocks() {
+    console.log('🔄 Generating fallback trending stocks from popular stocks...');
+    
+    const popularSymbols = [
+        'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'HINDUNILVR',
+        'ICICIBANK', 'KOTAKBANK', 'BHARTIARTL', 'SBIN', 'LT',
+        'ITC', 'AXISBANK', 'ASIANPAINT', 'MARUTI', 'TITAN',
+        'BAJFINANCE', 'HCLTECH', 'WIPRO', 'ULTRACEMCO', 'NESTLEIND',
+        'POWERGRID', 'NTPC', 'TECHM', 'SUNPHARMA', 'TATASTEEL',
+        'ONGC', 'COALINDIA', 'DIVISLAB', 'DRREDDY', 'CIPLA',
+        'BAJAJFINSV', 'ADANIPORTS', 'JSWSTEEL', 'HINDALCO', 'GRASIM',
+        'HEROMOTOCO', 'BRITANNIA', 'BAJAJ-AUTO', 'APOLLOHOSP', 'SHREECEM'
+    ];
+
+    const stocks = [];
+    let rank = 1;
+
+    for (const symbol of popularSymbols) {
+        try {
+            const quote = await getSimpleStockData(symbol, true);
+            const changeAmount = quote.currentPrice - quote.previousClose;
+            const changePercent = (changeAmount / quote.previousClose) * 100;
+
+            // Create company name from symbol (better formatting)
+            let companyName = symbol;
+            const companyNames = {
+                'RELIANCE': 'Reliance Industries Limited',
+                'TCS': 'Tata Consultancy Services Limited',
+                'HDFCBANK': 'HDFC Bank Limited',
+                'INFY': 'Infosys Limited',
+                'HINDUNILVR': 'Hindustan Unilever Limited',
+                'ICICIBANK': 'ICICI Bank Limited',
+                'KOTAKBANK': 'Kotak Mahindra Bank Limited',
+                'BHARTIARTL': 'Bharti Airtel Limited',
+                'SBIN': 'State Bank of India',
+                'LT': 'Larsen & Toubro Limited',
+                'ITC': 'ITC Limited',
+                'AXISBANK': 'Axis Bank Limited',
+                'ASIANPAINT': 'Asian Paints Limited',
+                'MARUTI': 'Maruti Suzuki India Limited',
+                'TITAN': 'Titan Company Limited',
+                'BAJFINANCE': 'Bajaj Finance Limited',
+                'HCLTECH': 'HCL Technologies Limited',
+                'WIPRO': 'Wipro Limited',
+                'ULTRACEMCO': 'UltraTech Cement Limited',
+                'NESTLEIND': 'Nestle India Limited',
+                'POWERGRID': 'Power Grid Corporation of India Limited',
+                'NTPC': 'NTPC Limited',
+                'TECHM': 'Tech Mahindra Limited',
+                'SUNPHARMA': 'Sun Pharmaceutical Industries Limited',
+                'TATASTEEL': 'Tata Steel Limited',
+                'ONGC': 'Oil and Natural Gas Corporation Limited',
+                'COALINDIA': 'Coal India Limited',
+                'DIVISLAB': 'Divi\'s Laboratories Limited',
+                'DRREDDY': 'Dr. Reddy\'s Laboratories Limited',
+                'CIPLA': 'Cipla Limited',
+                'BAJAJFINSV': 'Bajaj Finserv Limited',
+                'ADANIPORTS': 'Adani Ports and Special Economic Zone Limited',
+                'JSWSTEEL': 'JSW Steel Limited',
+                'HINDALCO': 'Hindalco Industries Limited',
+                'GRASIM': 'Grasim Industries Limited',
+                'HEROMOTOCO': 'Hero MotoCorp Limited',
+                'BRITANNIA': 'Britannia Industries Limited',
+                'BAJAJ-AUTO': 'Bajaj Auto Limited',
+                'APOLLOHOSP': 'Apollo Hospitals Enterprise Limited',
+                'SHREECEM': 'Shree Cement Limited'
+            };
+
+            companyName = companyNames[symbol] || symbol;
+
+            stocks.push({
+                symbol: symbol,
+                companyName: companyName,
+                lastPrice: quote.currentPrice,
+                dayHigh: quote.dayHigh,
+                dayLow: quote.dayLow,
+                changeAmount: changeAmount,
+                changePercent: changePercent,
+                volume: quote.volume?.toString() || '0',
+                lastUpdatedTime: new Date().toTimeString().split(' ')[0],
+                marketStatus: 'open',
+                trendRank: rank,
+                isPositiveChange: changeAmount > 0
+            });
+            rank++;
+
+            // Add small delay to avoid overwhelming the API
+            await new Promise(resolve => setTimeout(resolve, 50));
+
+            // Stop at 30 stocks
+            if (stocks.length >= 30) break;
+
+        } catch (error) {
+            console.log(`⚠️ Failed to get data for ${symbol}: ${error.message}`);
+            continue;
+        }
+    }
+
+    // Sort by absolute change percentage to make it more "trending"
+    stocks.sort((a, b) => Math.abs(b.changePercent) - Math.abs(a.changePercent));
+    
+    // Re-assign ranks after sorting
+    stocks.forEach((stock, index) => {
+        stock.trendRank = index + 1;
+    });
+
+    console.log(`✅ Generated ${stocks.length} fallback trending stocks`);
+    return stocks;
+}
+
+// Update the main scraping function call to always return data
+async function updateTrendingStocks() {
+    try {
+        console.log('🔄 Updating trending stocks...');
+        
+        // Scrape trending stocks (with fallback built-in)
+        const scrapedStocks = await scrapeTrendingStocks();
+        
+        if (scrapedStocks.length === 0) {
+            // This should not happen with fallback, but just in case
+            throw new Error('No trending stocks found even with fallback');
+        }
+        
+        // Store in database
+        const result = await storeTrendingStocks(scrapedStocks);
+        
+        console.log(`✅ Successfully updated ${result.count} trending stocks`);
+        return result;
+        
+    } catch (error) {
+        console.error('❌ Error updating trending stocks:', error.message);
+        throw error;
+    }
+}
+
 module.exports = {
     // Core stock data functions
     getSimpleStockData,
@@ -639,5 +1233,17 @@ module.exports = {
     closeDatabase,
     
     // Direct database access (if needed)
-    db
+    db,
+    
+    // Trending stocks functions
+    scrapeTrendingStocks,
+    storeTrendingStocks,
+    getTrendingStocks,
+    updateTrendingStocks,
+    shouldUpdateTrendingStocks,
+    
+    // Helper functions
+    parseVolume,
+    parsePrice,
+    parseChange
 };

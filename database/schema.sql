@@ -104,6 +104,24 @@ CREATE TABLE IF NOT EXISTS search_cache (
     expires_at DATETIME DEFAULT (datetime('now', '+1 hour'))
 );
 
+-- 8. Trending Stocks Table (New)
+CREATE TABLE IF NOT EXISTS trending_stocks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol VARCHAR(50) NOT NULL,
+    company_name VARCHAR(255) NOT NULL,
+    last_price DECIMAL(10,2),
+    day_high DECIMAL(10,2),
+    day_low DECIMAL(10,2),
+    change_amount DECIMAL(10,2),
+    change_percent DECIMAL(5,2),
+    volume VARCHAR(20), -- Store as string to handle M, K suffixes
+    last_updated_time VARCHAR(20), -- Store time like "13:06:38"
+    market_status VARCHAR(20) DEFAULT 'open',
+    trend_rank INTEGER,
+    scraped_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    is_positive_change BOOLEAN DEFAULT 0
+);
+
 -- Create indexes for better performance (separate statements)
 CREATE INDEX IF NOT EXISTS idx_quotes_symbol_time ON quotes(symbol, last_updated DESC);
 CREATE INDEX IF NOT EXISTS idx_historical_symbol_period ON historical_data(symbol, period, date DESC);
@@ -117,3 +135,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_popular_unique ON popular_stocks(symbol, c
 CREATE INDEX IF NOT EXISTS idx_search_cache_query ON search_cache(query);
 CREATE INDEX IF NOT EXISTS idx_search_cache_expires ON search_cache(expires_at);
 CREATE INDEX IF NOT EXISTS idx_search_cache_source ON search_cache(source);
+
+-- New indexes for trending stocks
+CREATE INDEX IF NOT EXISTS idx_trending_rank ON trending_stocks(trend_rank ASC);
+CREATE INDEX IF NOT EXISTS idx_trending_scraped ON trending_stocks(scraped_at DESC);
+CREATE INDEX IF NOT EXISTS idx_trending_symbol ON trending_stocks(symbol);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_trending_symbol_date ON trending_stocks(symbol, date(scraped_at));

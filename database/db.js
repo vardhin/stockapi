@@ -340,6 +340,77 @@ class StockDatabase {
                 }
             });
         });
+   }
+
+    // Clear today's trending stocks
+    async clearTodaysTrendingStocks() {
+        await this.init();
+        
+        return new Promise((resolve, reject) => {
+            const stmt = this.db.prepare(`
+                DELETE FROM trending_stocks 
+                WHERE date(scraped_at) = date('now')
+            `);
+            
+            stmt.run([], function(err) {
+                stmt.finalize();
+                if (err) reject(err);
+                else resolve(this.changes);
+            });
+        });
+    }
+
+    // Insert trending stock
+    async insertTrendingStock(stock) {
+        await this.init();
+        
+        return new Promise((resolve, reject) => {
+            const stmt = this.db.prepare(`
+                INSERT INTO trending_stocks 
+                (symbol, company_name, last_price, day_high, day_low, change_amount, 
+                 change_percent, volume, last_updated_time, market_status, trend_rank, is_positive_change)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `);
+            
+            stmt.run([
+                stock.symbol,
+                stock.companyName,
+                stock.lastPrice,
+                stock.dayHigh,
+                stock.dayLow,
+                stock.changeAmount,
+                stock.changePercent,
+                stock.volume,
+                stock.lastUpdatedTime,
+                stock.marketStatus || 'open',
+                stock.trendRank,
+                stock.isPositiveChange ? 1 : 0
+            ], function(err) {
+                stmt.finalize();
+                if (err) reject(err);
+                else resolve(this.lastID);
+            });
+        });
+    }
+
+    // Get trending stocks
+    async getTrendingStocks(limit = 30) {
+        await this.init();
+        
+        return new Promise((resolve, reject) => {
+            const stmt = this.db.prepare(`
+                SELECT * FROM trending_stocks 
+                WHERE date(scraped_at) = date('now')
+                ORDER BY trend_rank ASC 
+                LIMIT ?
+            `);
+            
+            stmt.all([limit], (err, rows) => {
+                stmt.finalize();
+                if (err) reject(err);
+                else resolve(rows);
+            });
+        });
     }
 
     async close() {
